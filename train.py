@@ -765,23 +765,15 @@ def build_dataset(
 # 7. MODEL BUILDING
 # =========================
 def build_dnn(input_dim):
-    initializer = tf.keras.initializers.GlorotUniform(seed=42)
-
     model = tf.keras.Sequential(
         [
             tf.keras.Input(shape=(input_dim,)),
-            tf.keras.layers.Dense(
-                512, activation="relu", kernel_initializer=initializer
-            ),
+            tf.keras.layers.Dense(512, activation="relu"),
             tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dropout(0.3, seed=42),
-            tf.keras.layers.Dense(
-                256, activation="relu", kernel_initializer=initializer
-            ),
-            tf.keras.layers.Dropout(0.3, seed=42),
-            tf.keras.layers.Dense(
-                128, activation="relu", kernel_initializer=initializer
-            ),
+            tf.keras.layers.Dropout(0.3),
+            tf.keras.layers.Dense(256, activation="relu"),
+            tf.keras.layers.Dropout(0.3),
+            tf.keras.layers.Dense(128, activation="relu"),
             tf.keras.layers.Dense(1, activation="sigmoid"),
         ]
     )
