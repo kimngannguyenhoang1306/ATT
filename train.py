@@ -1,108 +1,31 @@
 # =========================
-# MOSDroid FINAL (CFG + FULL OPCODE COVERAGE)
+# MOSDroid FINAL (CFG + FULL OPCODE COVERAGE) - COMPLETE
 # =========================
-# Upgrades:
-# - Full Dalvik opcode coverage (auto-loaded)
-# - CFG-like basic block segmentation using labels
-# - Accurate MOS extraction per basic block
 
 import os
 import re
-import numpy as np
+import pickle
+import subprocess
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import joblib
+import hashlib
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from gensim.models import Word2Vec
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 import tensorflow as tf
-import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
-
-
-def decode_apk(apk_path, output_dir):
-    """
-    Decode 1 APK -> smali folder
-    """
-    try:
-        subprocess.run(
-            ["apktool", "d", apk_path, "-o", output_dir, "-f"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception as e:
-        print(f"Error decoding {apk_path}: {e}")
-        return False
-
-
-def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8):
-    """Decode APK files với multi-threading"""
-    apk_tasks = []
-
-    for label in ["benign", "malware"]:
-        input_dir = os.path.join(raw_root, label)
-        output_dir = os.path.join(decoded_root, label)
-        os.makedirs(output_dir, exist_ok=True)
-
-        for apk in os.listdir(input_dir):
-            if not apk.endswith(".apk"):
-                continue
-
-            apk_path = os.path.join(input_dir, apk)
-            app_name = apk.replace(".apk", "")
-            out_path = os.path.join(output_dir, app_name)
-
-            if os.path.exists(out_path) and os.path.exists(
-                os.path.join(out_path, "smali")
-            ):
-                print(f"SKIP {label}: {apk[:30]} (already decoded)")
-                continue
-
-            apk_tasks.append((apk_path, out_path, label, apk))
-
-    # Decode với multi-threading
-    print(f"\n🚀 Decoding {len(apk_tasks)} APKs với {max_workers} threads...\n")
-
-    def decode_task(apk_path, out_path, label, apk_name):
-        # ✅ CHECK: nếu đã decode rồi thì bỏ qua
-        if os.path.exists(out_path) and os.path.exists(os.path.join(out_path, "smali")):
-            return f"SKIP {label}: {apk_name[:30]}"
-
-        try:
-            subprocess.run(
-                [
-                    "apktool",
-                    "d",
-                    apk_path,
-                    "-o",
-                    out_path,
-                    "-f",
-                    "-r",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return f"OK {label}: {apk_name[:30]}"
-        except Exception as e:
-            return f"FAIL {label}: {apk_name[:30]} - {str(e)[:30]}"
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(decode_task, apk_path, out_path, label, apk_name)
-            for apk_path, out_path, label, apk_name in apk_tasks
-        ]
-
-        for f in tqdm(as_completed(futures), total=len(futures), desc="Decoding APKs"):
-            result = f.result()
-            if "FAIL" in result:
-                print(result)
 
 
 # =========================
 # 1. FULL OPCODE LIST (Dalvik)
 # =========================
-# Simplified full coverage list (can extend)
 DALVIK_OPCODES = [
     "move",
     "move/from16",
@@ -144,7 +67,6 @@ DALVIK_OPCODES = [
     "rem-int",
 ]
 
-# Map all to categories
 CATEGORY = {}
 for op in DALVIK_OPCODES:
     if "move" in op:
@@ -168,337 +90,822 @@ for op in DALVIK_OPCODES:
 
 
 # =========================
-# 2. PARSE SMALI → BASIC BLOCKS (CFG-like)
+# 2. APK DECODING
 # =========================
-def extract_blocks(file_path):
+def decode_apk(apk_path, output_dir):
+    try:
+        subprocess.run(
+            ["apktool", "d", apk_path, "-o", output_dir, "-f", "-r"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        return True
+    except Exception as e:
+        print(f"Error decoding {apk_path}: {e}")
+        return False
+
+
+def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8):
+    apk_tasks = []
+
+    for label in ["benign", "malware"]:
+        input_dir = os.path.join(raw_root, label)
+        output_dir = os.path.join(decoded_root, label)
+        os.makedirs(output_dir, exist_ok=True)
+
+        if not os.path.exists(input_dir):
+            continue
+
+        for apk in os.listdir(input_dir):
+            if not apk.endswith(".apk"):
+                continue
+
+            apk_path = os.path.join(input_dir, apk)
+            app_name = apk.replace(".apk", "")
+            out_path = os.path.join(output_dir, app_name)
+
+            if os.path.exists(out_path) and os.path.exists(
+                os.path.join(out_path, "smali")
+            ):
+                continue
+
+            apk_tasks.append((apk_path, out_path, label, apk))
+
+    if not apk_tasks:
+        print("No APKs to decode.")
+        return
+
+    print(f"\n🚀 Decoding {len(apk_tasks)} APKs with {max_workers} threads...\n")
+
+    def decode_task(args):
+        apk_path, out_path, label, apk_name = args
+        if os.path.exists(out_path) and os.path.exists(os.path.join(out_path, "smali")):
+            return f"SKIP {label}: {apk_name[:30]}"
+        success = decode_apk(apk_path, out_path)
+        return f"{'OK' if success else 'FAIL'} {label}: {apk_name[:30]}"
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(decode_task, task) for task in apk_tasks]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Decoding APKs"):
+            result = f.result()
+            if "FAIL" in result:
+                print(result)
+
+
+# =========================
+# 3. SMALI PARSING & CFG
+# =========================
+REGISTER_PATTERN = re.compile(r"v\d+|p\d+")
+
+
+def normalize_line(line: str) -> str:
+    line = REGISTER_PATTERN.sub("vX", line)
+    line = re.sub(r'".*?"', '"STR"', line)
+    return line
+
+
+def build_cfg_from_file(file_path):
+    """Build CFG từ một file smali."""
+    G = nx.DiGraph()
     blocks = []
     current = []
 
-    with open(file_path, "rb") as f:
-        for line in f:
-            line = line.strip()
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except Exception:
+        return G, blocks
 
-            # ✅ dùng bytes
-            if line.startswith(b":"):
-                if current:
-                    blocks.append(current)
-                    current = []
-                continue
+    for line in lines:
+        line = normalize_line(line.strip())
 
-            if not line or line.startswith(b"."):
-                continue
+        if not line or line.startswith("."):
+            continue
 
-            parts = line.split()
-            if not parts:
-                continue
+        if line.startswith(":"):
+            if current:
+                blocks.append(current)
+                current = []
+            continue
 
-            token = parts[0].decode(errors="ignore")  # convert sang str
+        parts = line.split()
+        if not parts:
+            continue
 
-            if token in CATEGORY:
-                current.append(CATEGORY[token])
+        token = parts[0]
+        if token in CATEGORY:
+            current.append(CATEGORY[token])
 
-                if CATEGORY[token] == "V":
-                    blocks.append(current)
-                    current = []
+        if "goto" in token or "if-" in token or "return" in token:
+            if current:
+                blocks.append(current)
+                current = []
 
     if current:
         blocks.append(current)
 
-    return blocks
+    for i, block in enumerate(blocks):
+        G.add_node(i, features=block)
+        if i + 1 < len(blocks):
+            G.add_edge(i, i + 1)
+
+    return G, blocks
 
 
-# =========================
-# 3. BUILD MOS FROM BLOCKS
-# =========================
-def build_mos_from_blocks(blocks):
-    mos = Counter()
-    for b in blocks:
-        if len(b) > 0:
-            mos[tuple(b)] += 1
-    return mos
-
-
-# =========================
-# 4. PROCESS APK
-# =========================
-def process_apk(smali_dir):
-    apk_mos = Counter()
+def build_cfg_from_dir(smali_dir):
+    """Build CFG từ toàn bộ thư mục smali."""
+    all_blocks = []
+    combined_graph = nx.DiGraph()
+    node_offset = 0
 
     for root, _, files in os.walk(smali_dir):
-        for f in files:
-            if f.endswith(".smali"):
-                path = os.path.join(root, f)
-                blocks = extract_blocks(path)
-                mos = build_mos_from_blocks(blocks)
-                apk_mos.update(mos)
+        for fname in files:
+            if not fname.endswith(".smali"):
+                continue
 
-    return apk_mos
+            file_path = os.path.join(root, fname)
+            G, blocks = build_cfg_from_file(file_path)
+
+            all_blocks.extend(blocks)
+
+            mapping = {n: n + node_offset for n in G.nodes()}
+            G_relabeled = nx.relabel_nodes(G, mapping)
+            combined_graph = nx.compose(combined_graph, G_relabeled)
+            node_offset += len(G.nodes())
+
+    return combined_graph, all_blocks
 
 
 # =========================
-# 5. DATASET
+# 4. FEATURE EXTRACTION
 # =========================
-from concurrent.futures import ThreadPoolExecutor, as_completed
+def extract_ngrams(blocks, n=3):
+    sequences = Counter()
+    for block in blocks:
+        for i in range(len(block) - n + 1):
+            gram = tuple(block[i : i + n])
+            sequences[gram] += 1
+    return sequences
 
-import pickle
 
+def build_mos_from_blocks(blocks):
+    mos = Counter()
 
-def process_apk_cached(smali_dir):
-    cache_path = smali_dir + "_mos.pkl"
+    for block in blocks:
+        if block:
+            mos[tuple(block)] += 1
 
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
-
-    mos = process_apk(smali_dir)
-
-    with open(cache_path, "wb") as f:
-        pickle.dump(mos, f)
+    mos.update(extract_ngrams(blocks, n=2))
+    mos.update(extract_ngrams(blocks, n=3))
 
     return mos
 
 
-def build_dataset_fast(apk_dirs, labels, max_workers=8):
-    print("\n🚀 Building dataset (parallel)...")
+def extract_api_sequence(blocks):
+    api_seq = Counter()
+    for block in blocks:
+        for op in block:
+            if op == "V":
+                api_seq["API_CALL"] += 1
+    return api_seq
 
-    mos_list = [None] * len(apk_dirs)
 
-    def worker(i, d):
-        return i, process_apk_cached(d)
+def graph_to_features(G):
+    features = Counter()
+
+    for _, data in G.nodes(data=True):
+        block = data.get("features", [])
+        if block:
+            features[tuple(block)] += 1
+
+    features[("EDGE_COUNT",)] = G.number_of_edges()
+    features[("NODE_COUNT",)] = G.number_of_nodes()
+
+    return features
+
+
+# =========================
+# 5. EMBEDDING
+# =========================
+def train_opcode_embedding(all_blocks, vector_size=64):
+    """Train Word2Vec trên tất cả blocks."""
+    sentences = []
+    for block in all_blocks:
+        if block:
+            sentences.append([str(op) for op in block])
+
+    if not sentences:
+        return None
+
+    model = Word2Vec(
+        sentences,
+        vector_size=vector_size,
+        window=5,
+        min_count=1,
+        sg=1,
+        workers=4,
+    )
+    return model
+
+
+def encode_block(block, w2v_model, vector_size=64):
+    if w2v_model is None or not block:
+        return np.zeros(vector_size)
+
+    vectors = []
+    for op in block:
+        key = str(op)
+        if key in w2v_model.wv:
+            vectors.append(w2v_model.wv[key])
+
+    if not vectors:
+        return np.zeros(vector_size)
+
+    return np.mean(vectors, axis=0)
+
+
+def graph_embedding(G, w2v_model, vector_size=64):
+    if G.number_of_nodes() == 0:
+        return np.zeros(vector_size)
+
+    node_vecs = []
+    for _, data in G.nodes(data=True):
+        block = data.get("features", [])
+        vec = encode_block(block, w2v_model, vector_size)
+        node_vecs.append(vec)
+
+    if not node_vecs:
+        return np.zeros(vector_size)
+
+    return np.mean(node_vecs, axis=0)
+
+
+# =========================
+# 6. DATASET BUILDING
+# =========================
+def hash_dir(path):
+    """Tạo ID duy nhất cho mỗi APK (smali folder)."""
+    return hashlib.md5(path.encode()).hexdigest()
+
+
+def save_dataset(cache_dir, X, y, feature_names, scaler, apk_dirs):
+    os.makedirs(cache_dir, exist_ok=True)
+
+    np.save(os.path.join(cache_dir, "X.npy"), X)
+    np.save(os.path.join(cache_dir, "y.npy"), y)
+
+    joblib.dump(feature_names, os.path.join(cache_dir, "feature_names.pkl"))
+    joblib.dump(scaler, os.path.join(cache_dir, "scaler.pkl"))
+
+    apk_index = {hash_dir(p): p for p in apk_dirs}
+    joblib.dump(apk_index, os.path.join(cache_dir, "apk_index.pkl"))
+
+    print(f"💾 Dataset saved to {cache_dir}")
+
+
+def load_dataset(cache_dir):
+    X_path = os.path.join(cache_dir, "X.npy")
+    y_path = os.path.join(cache_dir, "y.npy")
+
+    if not os.path.exists(X_path):
+        return None
+
+    X = np.load(X_path)
+    y = np.load(y_path)
+
+    feature_names = joblib.load(os.path.join(cache_dir, "feature_names.pkl"))
+    scaler = joblib.load(os.path.join(cache_dir, "scaler.pkl"))
+    apk_index = joblib.load(os.path.join(cache_dir, "apk_index.pkl"))
+
+    print(f"📂 Loaded dataset from {cache_dir}")
+    return X, y, feature_names, scaler, apk_index
+
+
+def update_dataset(
+    cache_dir, apk_dirs, labels, build_dataset_fn, max_workers=8, use_cache=True
+):
+    """
+    - Load dataset cũ
+    - Chỉ process APK mới
+    - Merge lại
+    """
+
+    cached = load_dataset(cache_dir)
+
+    if cached is None:
+        print("No cache found → building new dataset...")
+        X, y, feature_names, scaler = build_dataset_fn(
+            apk_dirs, labels, max_workers, use_cache
+        )
+        save_dataset(cache_dir, X, y, feature_names, scaler, apk_dirs)
+        return X, y, feature_names, scaler
+
+    X_old, y_old, feature_names, scaler, apk_index = cached
+
+    # APK mới
+    new_apks = []
+    new_labels = []
+
+    for p, label in zip(apk_dirs, labels):
+        if hash_dir(p) not in apk_index:
+            new_apks.append(p)
+            new_labels.append(label)
+
+    print(f"🆕 New APKs found: {len(new_apks)}")
+
+    if len(new_apks) == 0:
+        return X_old, y_old, feature_names, scaler
+
+    # build dataset cho APK mới
+    X_new, y_new, feature_names, scaler = build_dataset_fn(
+        new_apks, new_labels, max_workers
+    )
+
+    # merge
+    X = np.vstack([X_old, X_new])
+    y = np.concatenate([y_old, y_new])
+
+    # update index
+    for p in new_apks:
+        apk_index[hash_dir(p)] = p
+
+    # save lại
+    save_dataset(cache_dir, X, y, feature_names, scaler, list(apk_index.values()))
+
+    print("✅ Dataset updated successfully")
+
+    return X, y, feature_names, scaler
+
+
+def counter_to_vector_with_vocab(counter, vocab, default_size=2000):
+    """Convert Counter thành vector dựa trên vocabulary cố định."""
+    vec = np.zeros(len(vocab))
+    for key, count in counter.items():
+        if key in vocab:
+            vec[vocab[key]] = count
+    return vec
+
+
+def build_global_vocab(all_counters, min_freq=2, max_features=2000):
+    """Build vocabulary từ tất cả counters."""
+    global_counter = Counter()
+    for c in all_counters:
+        global_counter.update(c)
+
+    filtered = [(k, v) for k, v in global_counter.items() if v >= min_freq]
+    filtered.sort(key=lambda x: -x[1])
+
+    vocab = {k: i for i, (k, _) in enumerate(filtered[:max_features])}
+    return vocab
+
+
+def process_single_apk(smali_dir, w2v_model):
+    """Process một APK và trả về raw features."""
+    G, blocks = build_cfg_from_dir(smali_dir)
+
+    mos = build_mos_from_blocks(blocks)
+    api = extract_api_sequence(blocks)
+    cfg_feat = graph_to_features(G)
+    emb = graph_embedding(G, w2v_model)
+
+    return {
+        "mos": mos,
+        "api": api,
+        "cfg": cfg_feat,
+        "emb": emb,
+        "blocks": blocks,
+    }
+
+
+# ✅ BỔ SUNG: Cache pkl để tránh re-process APK đã xử lý
+def process_apk_cached(smali_dir, w2v_model):
+    """
+    Process APK với caching pkl.
+    Lần đầu chạy sẽ lưu cache; lần sau load thẳng từ file.
+    Lưu ý: cache KHÔNG chứa embedding vì w2v_model có thể thay đổi.
+    """
+    cache_path = smali_dir.rstrip("/") + "_features.pkl"
+
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                cached = pickle.load(f)
+            # Tính lại embedding với model hiện tại (không cache embedding)
+            G, blocks = cached["G"], cached["blocks"]
+            emb = graph_embedding(G, w2v_model)
+            cached["emb"] = emb
+            return cached
+        except Exception:
+            pass  # cache bị lỗi → tính lại
+
+    result = process_single_apk(smali_dir, w2v_model)
+
+    # Lưu cache (không lưu emb vì phụ thuộc model)
+    try:
+        cache_data = {
+            "mos": result["mos"],
+            "api": result["api"],
+            "cfg": result["cfg"],
+            "blocks": result["blocks"],
+            "G": build_cfg_from_dir(smali_dir)[0],  # lưu graph để tính lại emb sau
+        }
+        with open(cache_path, "wb") as f:
+            pickle.dump(cache_data, f)
+    except Exception as e:
+        print(f"Warning: Could not save cache for {smali_dir}: {e}")
+
+    return result
+
+
+def build_dataset(apk_dirs, labels, max_workers=8, vector_size=64, use_cache=True):
+    """
+    Build dataset với proper vocabulary handling.
+    use_cache=True sẽ dùng process_apk_cached thay vì process_single_apk.
+    """
+    print("\n📊 Step 1: Collecting all blocks for embedding training...")
+
+    all_blocks = []
+    for smali_dir in tqdm(apk_dirs, desc="Scanning"):
+        _, blocks = build_cfg_from_dir(smali_dir)
+        all_blocks.extend(blocks)
+
+    print(f"Total blocks collected: {len(all_blocks)}")
+
+    print("\n🧠 Step 2: Training Word2Vec embedding...")
+    w2v_model = train_opcode_embedding(all_blocks, vector_size)
+
+    print("\n🔧 Step 3: Extracting features from all APKs...")
+
+    results = [None] * len(apk_dirs)
+
+    def worker(idx, smali_dir):
+        if use_cache:
+            return idx, process_apk_cached(smali_dir, w2v_model)
+        return idx, process_single_apk(smali_dir, w2v_model)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+            idx, result = f.result()
+            results[idx] = result
 
-        for f in tqdm(as_completed(futures), total=len(futures)):
-            i, mos = f.result()
-            mos_list[i] = mos
+    print("\n📚 Step 4: Building global vocabulary...")
 
-    # ===== build feature space =====
-    all_features = Counter()
-    for mos in mos_list:
-        all_features.update(mos.keys())
+    all_mos = [r["mos"] for r in results]
+    all_api = [r["api"] for r in results]
+    all_cfg = [r["cfg"] for r in results]
 
-    threshold = max(1, int(len(apk_dirs) * 0.01))
-    features = [f for f, c in all_features.items() if c >= threshold]
-    index = {f: i for i, f in enumerate(features)}
+    mos_vocab = build_global_vocab(all_mos, min_freq=2, max_features=1500)
+    api_vocab = build_global_vocab(all_api, min_freq=1, max_features=200)
+    cfg_vocab = build_global_vocab(all_cfg, min_freq=1, max_features=300)
 
-    print(f"Feature count: {len(features)}")
+    print(
+        f"Vocab sizes - MOS: {len(mos_vocab)}, API: {len(api_vocab)}, CFG: {len(cfg_vocab)}"
+    )
 
-    # ===== build X =====
-    X = np.zeros((len(apk_dirs), len(features)), dtype=np.uint8)
+    print("\n🔢 Step 5: Building feature vectors...")
 
-    for i, mos in enumerate(mos_list):
-        for k in mos:
-            if k in index:
-                X[i][index[k]] = 1
+    X = []
+    for r in results:
+        mos_vec = counter_to_vector_with_vocab(r["mos"], mos_vocab)
+        api_vec = counter_to_vector_with_vocab(r["api"], api_vocab)
+        cfg_vec = counter_to_vector_with_vocab(r["cfg"], cfg_vocab)
+        emb_vec = r["emb"]
 
-    return X, np.array(labels), features
+        combined = np.concatenate([mos_vec, api_vec, cfg_vec, emb_vec])
+        X.append(combined)
+
+    X = np.array(X)
+    y = np.array(labels)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
+    feature_names = (
+        list(mos_vocab.keys())
+        + list(api_vocab.keys())
+        + list(cfg_vocab.keys())
+        + [f"emb_{i}" for i in range(vector_size)]
+    )
+
+    print(f"\n✅ Dataset built: X={X.shape}, y={y.shape}")
+
+    return X, y, feature_names, scaler
 
 
 # =========================
-# 6. DNN
+# 7. MODEL BUILDING
 # =========================
 def build_dnn(input_dim):
     model = tf.keras.Sequential(
         [
-            tf.keras.Input(shape=(input_dim,)),  # ✅ đúng chuẩn
+            tf.keras.Input(shape=(input_dim,)),
+            tf.keras.layers.Dense(512, activation="relu"),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Dropout(0.3),
             tf.keras.layers.Dense(256, activation="relu"),
-            tf.keras.layers.Dense(256, activation="relu"),
+            tf.keras.layers.Dropout(0.3),
             tf.keras.layers.Dense(128, activation="relu"),
             tf.keras.layers.Dense(1, activation="sigmoid"),
         ]
     )
 
-    model.compile(optimizer="adam", loss="binary_crossentropy")
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        loss="binary_crossentropy",
+        metrics=["accuracy"],
+    )
     return model
 
 
+def get_dnn_importance_scores(model):
+    """
+    Get feature importance từ first Dense layer weights.
+    Tìm layer Dense đầu tiên có weight matrix 2D để đảm bảo đúng layer.
+    """
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.Dense):
+            weights = layer.get_weights()
+            if weights and len(weights[0].shape) == 2:
+                return np.sum(np.abs(weights[0]), axis=1)
+    return None
+
+
+def select_top_k_features(X_train, X_test, importance, k=3000):
+    """Select top k features based on importance scores."""
+    if importance is None or len(importance) != X_train.shape[1]:
+        return X_train, X_test, np.arange(X_train.shape[1])
+
+    k = min(k, X_train.shape[1])
+    idx = np.argsort(importance)[-k:]
+
+    return X_train[:, idx], X_test[:, idx], idx
+
+
+# ✅ BỔ SUNG: Lọc feature xuất hiện quá ít trong dataset
 def filter_infrequent_features(X, threshold=0.01):
-    # số app chứa feature
-    app_counts = np.sum(X > 0, axis=0)
+    """
+    Loại bỏ các feature xuất hiện trong ít hơn `threshold * n_samples` APK.
+    Giúp giảm noise và overfitting từ các feature rất hiếm.
 
-    # ❌ bạn đang sai ở đây
-    min_apps = int(X.shape[0] * threshold)
-
+    Args:
+        X: feature matrix (n_samples, n_features)
+        threshold: tỉ lệ tối thiểu số APK phải có feature (mặc định 1%)
+    Returns:
+        X_filtered: ma trận đã lọc
+        mask: boolean mask các feature được giữ lại
+    """
+    app_counts = np.sum(X > 0, axis=0)  # số APK chứa mỗi feature
+    min_apps = max(1, int(X.shape[0] * threshold))
     mask = app_counts >= min_apps
+    print(
+        f"  filter_infrequent_features: giữ {mask.sum()}/{X.shape[1]} features (threshold={threshold})"
+    )
     return X[:, mask], mask
 
 
-def get_dnn_importance_scores(model):
-    for layer in model.layers:
-        if len(layer.get_weights()) > 0:
-            weights = layer.get_weights()[0]
-            importance = np.sum(np.abs(weights), axis=1)
-            return importance
+# ✅ BỔ SUNG: Tự động chọn k tối ưu cho feature selection
+def auto_select_k(X_train, y_train, candidate_k=None):
+    """
+    Thử các giá trị k khác nhau, dùng RF để ước lượng nhanh AUC trên train set,
+    trả về k cho AUC cao nhất.
 
+    Args:
+        X_train: feature matrix tập train
+        y_train: nhãn tập train
+        candidate_k: danh sách k cần thử (mặc định [500, 1000, 2000, 3000])
+    Returns:
+        best_k (int), best_auc (float)
+    """
+    if candidate_k is None:
+        candidate_k = [500, 1000, 2000, 3000]
 
-def select_top_k_features(X_train, X_test, y_train, k=3000):
-    model = build_dnn(X_train.shape[1])
-    model.fit(X_train, y_train, epochs=3, verbose=0)
+    # Giới hạn k không vượt quá số feature thực tế
+    candidate_k = [k for k in candidate_k if k <= X_train.shape[1]]
+    if not candidate_k:
+        candidate_k = [X_train.shape[1]]
 
-    importance = get_dnn_importance_scores(model)
+    print(f"\n🔍 auto_select_k: thử {candidate_k}...")
 
-    idx = np.argsort(importance)[-k:]
+    # Train DNN nhanh 1 lần để lấy importance
+    prelim = build_dnn(X_train.shape[1])
+    prelim.fit(X_train, y_train, epochs=3, verbose=0, batch_size=32)
+    importance = get_dnn_importance_scores(prelim)
 
-    return X_train[:, idx], X_test[:, idx]
-
-
-def auto_select_k(X, y):
-    candidate_k = [500, 1000, 2000, 3000]
     best_k = candidate_k[0]
-    best_score = 0
+    best_auc = 0.0
 
     for k in candidate_k:
-        print(f"Testing k={k}...")
+        idx = np.argsort(importance)[-k:] if importance is not None else np.arange(k)
+        X_k = X_train[:, idx]
 
-        model = build_dnn(X.shape[1])
-        model.fit(X, y, epochs=2, verbose=0)
-
-        importance = get_dnn_importance_scores(model)
-        idx = np.argsort(importance)[-k:]
-
-        X_k = X[:, idx]
-
-        # dùng RF để estimate nhanh
-        rf = RandomForestClassifier(n_estimators=100)
-        rf.fit(X_k, y)
+        rf = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42)
+        rf.fit(X_k, y_train)
         probs = rf.predict_proba(X_k)[:, 1]
+        auc = roc_auc_score(y_train, probs)
 
-        auc = roc_auc_score(y, probs)
+        print(f"  k={k:>5} → AUC={auc:.4f}")
 
-        print(f" → AUC={auc:.4f}")
-
-        if auc > best_score:
-            best_score = auc
+        if auc > best_auc:
+            best_auc = auc
             best_k = k
 
-    return best_k, best_score
+    print(f"  ✅ Best k = {best_k} (AUC={best_auc:.4f})")
+    return best_k, best_auc
 
 
 # =========================
-# 7. TRAIN
+# 8. TRAINING & EVALUATION
 # =========================
-from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix
-import matplotlib.pyplot as plt
-
-
-def train(X, y):
-    print(f"\n📊 Total samples: {X.shape}")
-
-    # ===== STEP 1: filter feature =====
-    X, mask = filter_infrequent_features(X, threshold=0.01)
-    print(f"After frequency filter: {X.shape}")
-
-    # ===== STEP 2: split =====
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y)
-    print(f"Train: {X_train.shape}, Test: {X_test.shape}")
-
-    # ===== STEP 3: AUTO SELECT K =====
-    best_k, best_score = auto_select_k(X_train, y_train)
-    print(f"🔥 Best k = {best_k} (AUC={best_score:.4f})")
-
-    X_train, X_test = select_top_k_features(X_train, X_test, y_train, k=best_k)
-    print(f"After feature selection: {X_train.shape}")
-
-    # ===== STEP 4: TRAIN MODELS =====
-    print("\n=== TRAINING ===")
-
-    # SVM
-    print("→ Training SVM...")
-    svm = SVC(kernel="linear", C=0.0625, probability=True)
-    svm.fit(X_train, y_train)
-    svm_probs = svm.predict_proba(X_test)[:, 1]
-
-    # RF
-    print("→ Training RF...")
-    rf = RandomForestClassifier(n_estimators=300)
-    rf.fit(X_train, y_train)
-    rf_probs = rf.predict_proba(X_test)[:, 1]
-
-    # DNN
-    print("→ Training DNN...")
-    dnn = build_dnn(X_train.shape[1])
-    dnn.fit(X_train, y_train, epochs=5, verbose=1)
-    dnn_probs = dnn.predict(X_test).flatten()
-
-    # ===== STEP 5: EVALUATION =====
-    print("\n=== EVALUATION ===")
-
-    evaluate_model("SVM", y_test, svm_probs)
-    evaluate_model("RF", y_test, rf_probs)
-    evaluate_model("DNN", y_test, dnn_probs)
-
-    # ===== STEP 6: ROC CURVE =====
-    plot_roc(y_test, {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs})
-
-    return dnn, X_test, y_test
-
-
-def evaluate_model(name, y_true, probs):
-    preds = (probs > 0.5).astype(int)
+def evaluate_model(name, y_true, probs, threshold=0.5):
+    preds = (probs > threshold).astype(int)
 
     acc = accuracy_score(y_true, preds)
     auc = roc_auc_score(y_true, probs)
     cm = confusion_matrix(y_true, preds)
 
-    print(f"\n{name}")
+    print(f"\n{'='*40}")
+    print(f"{name}")
+    print(f"{'='*40}")
     print(f"Accuracy: {acc:.4f}")
-    print(f"AUC: {auc:.4f}")
-    print("Confusion Matrix:")
-    print(cm)
+    print(f"AUC:      {auc:.4f}")
+    print(f"Confusion Matrix:\n{cm}")
+
+    return {"accuracy": acc, "auc": auc, "confusion_matrix": cm}
 
 
-def plot_roc(y_true, models_probs):
-    plt.figure()
+def plot_roc(y_true, models_probs, save_path=None):
+    plt.figure(figsize=(8, 6))
 
     for name, probs in models_probs.items():
         fpr, tpr, _ = roc_curve(y_true, probs)
         auc = roc_auc_score(y_true, probs)
-        plt.plot(fpr, tpr, label=f"{name} (AUC={auc:.3f})")
+        plt.plot(fpr, tpr, label=f"{name} (AUC={auc:.3f})", linewidth=2)
 
-    plt.plot([0, 1], [0, 1], linestyle="--")
+    plt.plot([0, 1], [0, 1], "k--", linewidth=1)
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title("ROC Curve")
-    plt.legend()
+    plt.title("ROC Curve Comparison")
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
 
 
-def plot_feature_importance(importance, features, top_n=20):
+def plot_feature_importance(importance, features, top_n=20, save_path=None):
+    if importance is None:
+        print("No importance scores available.")
+        return
+
+    top_n = min(top_n, len(importance), len(features))
     idx = np.argsort(importance)[-top_n:]
 
-    plt.figure()
-    plt.barh(range(top_n), importance[idx])
+    plt.figure(figsize=(10, 8))
+    plt.barh(range(top_n), importance[idx], color="steelblue")
 
-    labels = [str(features[i]) for i in idx]
-
+    labels = [str(features[i])[:40] for i in idx]
     plt.yticks(range(top_n), labels)
-    plt.title("Top Feature Importance")
+    plt.xlabel("Importance Score")
+    plt.title(f"Top {top_n} Feature Importance")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
+
+
+def train_and_evaluate(X, y, feature_names, test_size=0.2):
+    """
+    Pipeline đầy đủ:
+      1. filter_infrequent_features  ← ✅ bổ sung
+      2. train/test split
+      3. auto_select_k               ← ✅ bổ sung
+      4. select_top_k_features
+      5. Train SVM / RF / DNN
+      6. Evaluate + plot
+    """
+    print(f"\n{'='*60}")
+    print("TRAINING AND EVALUATION")
+    print(f"{'='*60}")
+    print(f"Dataset shape: {X.shape}")
+
+    # ✅ STEP 1: Lọc feature xuất hiện quá ít
+    print("\n🔎 Step 1: Filtering infrequent features...")
+    X, freq_mask = filter_infrequent_features(X, threshold=0.01)
+    # Cập nhật feature_names theo mask
+    feature_names = [f for f, keep in zip(feature_names, freq_mask) if keep]
+    print(f"After filter: {X.shape}")
+
+    # STEP 2: Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, stratify=y, random_state=42
+    )
+    print(f"Train: {X_train.shape}, Test: {X_test.shape}")
+
+    # ✅ STEP 3: Tự động chọn k
+    best_k, _ = auto_select_k(X_train, y_train, candidate_k=[500, 1000, 2000, 3000])
+
+    # STEP 4: Feature selection dùng DNN importance + best_k
+    print(f"\n🔍 Step 4: Feature selection (k={best_k})...")
+    prelim_dnn = build_dnn(X_train.shape[1])
+    prelim_dnn.fit(X_train, y_train, epochs=3, verbose=0, batch_size=32)
+    importance = get_dnn_importance_scores(prelim_dnn)
+
+    X_train_sel, X_test_sel, selected_idx = select_top_k_features(
+        X_train, X_test, importance, k=best_k
+    )
+    print(f"Selected {X_train_sel.shape[1]} features")
+
+    # STEP 5: Train models
+    print("\n🚀 Step 5: Training models...")
+
+    print("→ Training SVM...")
+    svm = SVC(kernel="linear", C=0.0625, probability=True)
+    svm.fit(X_train_sel, y_train)
+    svm_probs = svm.predict_proba(X_test_sel)[:, 1]
+
+    print("→ Training Random Forest...")
+    rf = RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=42)
+    rf.fit(X_train_sel, y_train)
+    rf_probs = rf.predict_proba(X_test_sel)[:, 1]
+
+    print("→ Training DNN...")
+    dnn = build_dnn(X_train_sel.shape[1])
+    dnn.fit(
+        X_train_sel,
+        y_train,
+        epochs=10,
+        batch_size=32,
+        validation_split=0.1,
+        verbose=1,
+    )
+    dnn_probs = dnn.predict(X_test_sel, verbose=0).flatten()
+
+    # STEP 6: Evaluate
+    print("\n📊 EVALUATION RESULTS")
+    results = {
+        "SVM": evaluate_model("SVM", y_test, svm_probs),
+        "RF": evaluate_model("Random Forest", y_test, rf_probs),
+        "DNN": evaluate_model("DNN", y_test, dnn_probs),
+    }
+
+    # Plot
+    plot_roc(y_test, {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs})
+
+    selected_features = [feature_names[i] for i in selected_idx]
+    dnn_importance = get_dnn_importance_scores(dnn)
+    plot_feature_importance(dnn_importance, selected_features, top_n=20)
+
+    return {
+        "models": {"svm": svm, "rf": rf, "dnn": dnn},
+        "results": results,
+        "selected_idx": selected_idx,
+    }
 
 
 # =========================
 # MAIN
 # =========================
 if __name__ == "__main__":
-    # Step 1: decode APK
-    batch_decode_full(raw_root="raw_apk", decoded_root="decoded")
+    # Step 1: Decode APKs (bỏ comment nếu cần)
+    batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
 
-    # Step 2: lấy path smali
+    # Step 2: Collect APK paths
     apk_dirs = []
     labels = []
 
     for label, folder in [(0, "decoded/benign"), (1, "decoded/malware")]:
+        if not os.path.exists(folder):
+            print(f"Warning: {folder} does not exist")
+            continue
+
         for app in os.listdir(folder):
             smali_path = os.path.join(folder, app, "smali")
             if os.path.exists(smali_path):
                 apk_dirs.append(smali_path)
                 labels.append(label)
 
-    print("Dataset size:", len(apk_dirs))
+    print(f"\n📱 Dataset size: {len(apk_dirs)} APKs")
+    print(f"   Benign: {labels.count(0)}, Malware: {labels.count(1)}")
 
-    # Step 3: build dataset + train
-    X, y, features = build_dataset_fast(apk_dirs, labels, max_workers=8)
-    dnn, X_test, y_test = train(X, y)
-    importance = get_dnn_importance_scores(dnn)
-    plot_feature_importance(importance, features, top_n=20)
+    if len(apk_dirs) == 0:
+        print("No APKs found. Please check the directory structure.")
+        exit(1)
+
+    # Step 3: Build dataset (use_cache=True để tận dụng pkl cache)
+    X, y, feature_names, scaler = update_dataset(
+        cache_dir="dataset_cache",
+        apk_dirs=apk_dirs,
+        labels=labels,
+        build_dataset_fn=build_dataset,
+        max_workers=8,
+        use_cache=True,
+    )
+
+    # Step 4: Train and evaluate
+    output = train_and_evaluate(X, y, feature_names)
+
+    print("\n✅ Training complete!")
