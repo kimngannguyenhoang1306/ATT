@@ -855,10 +855,10 @@ def auto_select_k(X_train, y_train, candidate_k=None):
 
     print(f"\n🔍 auto_select_k: thử {candidate_k}...")
 
-    # Train DNN nhanh 1 lần để lấy importance
-    prelim = build_dnn(X_train.shape[1])
-    prelim.fit(X_train, y_train, epochs=3, verbose=0, batch_size=32)
-    importance = get_dnn_importance_scores(prelim)
+    # Train RF nhanh 1 lần để lấy importance
+    rf = RandomForestClassifier(n_estimators=100, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    iimportance = rf.feature_importances_
 
     best_k = candidate_k[0]
     best_auc = 0.0
