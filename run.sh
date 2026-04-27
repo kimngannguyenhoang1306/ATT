@@ -12,20 +12,22 @@ echo ""
 echo "[0/5] Cài đặt apktool..."
 if ! command -v apktool &> /dev/null; then
     echo "⚠ apktool chưa được cài đặt, tiến hành cài đặt..."
+
     apt update
-	apt install -y openjdk-11-jdk
+    apt install -y openjdk-11-jdk wget
 
-	# Download APKTool (version mới, còn tồn tại)
-	wget https://github.com/iBotPeaches/Apktool/releases/download/v3.0.2/apktool_3.0.2.jar -O apktool.jar
+    # Download APKTool
+    wget https://github.com/iBotPeaches/Apktool/releases/download/v3.0.2/apktool_3.0.2.jar -O /usr/local/bin/apktool.jar
 
-	# Tạo command apktool
-	echo -e '#!/bin/bash\njava -jar /content/apktool.jar "$@"' > apktool
-	chmod +x apktool
-	mv apktool /usr/local/bin/
+    # Tạo command apktool (FIX PATH)
+    echo -e '#!/bin/bash\njava -jar /usr/local/bin/apktool.jar "$@"' > /usr/local/bin/apktool
+
+    chmod +x /usr/local/bin/apktool
+
     if command -v apktool &> /dev/null; then
         echo "✓ apktool cài đặt thành công!"
     else
-        echo "⚠ Cảnh báo: apktool cài đặt có thể thất bại, vui lòng cài thủ công"
+        echo "❌ apktool cài đặt thất bại"
     fi
 else
     echo "✓ apktool đã được cài đặt"

@@ -40,7 +40,7 @@ def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
     """Decode APK files với multi-threading"""
     apk_tasks = []
 
-    for label in ["malware"]:
+    for label in ["benign", "malware"]:
         input_dir = os.path.join(raw_root, label)
         output_dir = os.path.join(decoded_root, label)
         os.makedirs(output_dir, exist_ok=True)
@@ -53,12 +53,21 @@ def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
             app_name = apk.replace(".apk", "")
             out_path = os.path.join(output_dir, app_name)
 
+            if os.path.exists(out_path) and os.path.exists(
+                os.path.join(out_path, "smali")
+            ):
+                continue
+
             apk_tasks.append((apk_path, out_path, label, apk))
 
     # Decode với multi-threading
     print(f"\n🚀 Decoding {len(apk_tasks)} APKs với {max_workers} threads...\n")
 
     def decode_task(apk_path, out_path, label, apk_name):
+        # ✅ CHECK: nếu đã decode rồi thì bỏ qua
+        if os.path.exists(out_path) and os.path.exists(os.path.join(out_path, "smali")):
+            return f"SKIP {label}: {apk_name[:30]}"
+
         try:
             subprocess.run(
                 [
@@ -68,7 +77,7 @@ def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
                     "-o",
                     out_path,
                     "-f",
-                    "-r",  # skip resource → nhanh hơn
+                    "-r",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -85,6 +94,8 @@ def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
 
         for f in tqdm(as_completed(futures), total=len(futures), desc="Decoding APKs"):
             result = f.result()
+            if "FAIL" in result:
+                print(result)
 
 
 # =========================
@@ -467,7 +478,7 @@ def plot_feature_importance(importance, top_n=20):
 # =========================
 if __name__ == "__main__":
     # Step 1: decode APK
-    # batch_decode_full(raw_root="raw_apk", decoded_root="decoded")
+    batch_decode_full(raw_root="raw_apk", decoded_root="decoded")
 
     # Step 2: lấy path smali
     apk_dirs = []

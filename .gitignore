@@ -1,0 +1,30 @@
+# ===== DATA =====
+raw_apk/
+daily_batches/
+decoded/
+
+# ===== OUTPUT =====
+*.csv
+*.pkl
+*.npy
+*.npz
+
+# ===== APK / ZIP =====
+*.apk
+*.zip
+
+# ===== CACHE =====
+__pycache__/
+*.pyc
+
+# ===== LOG =====
+*.log
+
+# ===== ENV =====
+.env
+venv/
+.venv/
+
+# ===== SYSTEM =====
+.DS_Store
+Thumbs.db
