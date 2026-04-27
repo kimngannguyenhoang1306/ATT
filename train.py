@@ -23,6 +23,65 @@ from sklearn.ensemble import RandomForestClassifier
 import tensorflow as tf
 
 
+W2V_CACHE_PATH = "w2v_model.model"
+
+
+def save_w2v_model(model):
+    model.save(W2V_CACHE_PATH)
+
+
+def load_w2v_model():
+    if os.path.exists(W2V_CACHE_PATH):
+        return Word2Vec.load(W2V_CACHE_PATH)
+    return None
+
+
+def get_feature_cache_path(smali_dir):
+    return smali_dir.rstrip("/") + "_features.pkl"
+
+
+def process_apk_features_cached(smali_dir, w2v_model):
+    cache_path = get_feature_cache_path(smali_dir)
+
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+        except:
+            pass
+
+    blocks = get_blocks_cached(smali_dir)
+    G = build_cfg_from_blocks(blocks)
+    result = process_single_apk(smali_dir, w2v_model, G, blocks)
+
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(result, f)
+    except:
+        pass
+
+    return result
+
+
+def get_cfg_cache_path(smali_dir):
+    return smali_dir.rstrip("/") + "_cfg.pkl"
+
+
+def build_cfg_cached(smali_dir, blocks):
+    path = get_cfg_cache_path(smali_dir)
+
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
+    G = build_cfg_from_blocks(blocks)
+
+    with open(path, "wb") as f:
+        pickle.dump(G, f)
+
+    return G
+
+
 # =========================
 # 1. FULL OPCODE LIST (Dalvik)
 # =========================
@@ -191,6 +250,17 @@ def extract_blocks_only(file_path):
     return blocks
 
 
+def build_cfg_from_blocks(blocks):
+    G = nx.DiGraph()
+
+    for i, block in enumerate(blocks):
+        G.add_node(i, features=block)
+        if i + 1 < len(blocks):
+            G.add_edge(i, i + 1)
+
+    return G
+
+
 def build_cfg_from_file(file_path):
     """Build CFG từ một file smali."""
     G = nx.DiGraph()
@@ -237,6 +307,28 @@ def build_cfg_from_file(file_path):
             G.add_edge(i, i + 1)
 
     return G, blocks
+
+
+def get_blocks_cached(smali_dir):
+    cache_path = smali_dir.rstrip("/") + "_blocks.pkl"
+
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+        except:
+            pass  # nếu cache lỗi thì fallback
+
+    # nếu chưa có cache → parse
+    blocks = build_blocks_only(smali_dir)
+
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(blocks, f)
+    except:
+        pass
+
+    return blocks
 
 
 def build_blocks_only(smali_dir):
@@ -376,6 +468,7 @@ def encode_block(block, w2v_model, vector_size=64):
 
 def graph_embedding(G, w2v_model, vector_size=64):
     if G.number_of_nodes() == 0:
+        print("Warning: empty CFG")
         return np.zeros(vector_size)
 
     node_vecs = []
@@ -509,10 +602,7 @@ def build_global_vocab(all_counters, min_freq=2, max_features=2000):
     return vocab
 
 
-def process_single_apk(smali_dir, w2v_model):
-    """Process một APK và trả về raw features."""
-    G, blocks = build_cfg_from_dir_fast(smali_dir)
-
+def process_single_apk(smali_dir, w2v_model, G, blocks):
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
     cfg_feat = graph_to_features(G)
@@ -566,7 +656,9 @@ def process_apk_cached(smali_dir, w2v_model):
     return result
 
 
-def build_dataset(apk_dirs, labels, max_workers=8, vector_size=64, use_cache=True):
+def build_dataset(
+    apk_dirs, labels, max_workers=8, vector_size=64, use_cache=True, test_size=0.2
+):
     """
     Build dataset với proper vocabulary handling.
     use_cache=True sẽ dùng process_apk_cached thay vì process_single_apk.
@@ -577,23 +669,32 @@ def build_dataset(apk_dirs, labels, max_workers=8, vector_size=64, use_cache=Tru
     print("\n📊 Step 1: Collecting blocks (ONE PASS ONLY)...")
 
     for smali_dir in tqdm(apk_dirs, desc="Scanning"):
-        blocks = build_blocks_only(smali_dir)
+        if use_cache:
+            blocks = get_blocks_cached(smali_dir)
+        else:
+            blocks = build_blocks_only(smali_dir)
         apk_blocks[smali_dir] = blocks
         all_blocks.extend(blocks)
 
     print(f"Total blocks collected: {len(all_blocks)}")
 
     print("\n🧠 Step 2: Training Word2Vec embedding...")
-    w2v_model = train_opcode_embedding(all_blocks, vector_size)
+    w2v_model = load_w2v_model()
+
+    if w2v_model is None:
+        print("🧠 Training Word2Vec...")
+        w2v_model = train_opcode_embedding(all_blocks, vector_size)
+        save_w2v_model(w2v_model)
+    else:
+        print("📦 Loaded cached Word2Vec model")
 
     print("\n🔧 Step 3: Extracting features from all APKs...")
 
     results = [None] * len(apk_dirs)
 
     def worker(idx, smali_dir):
-        blocks = apk_blocks[smali_dir]
-        G, _ = build_cfg_from_dir(smali_dir)  # chỉ khi cần CFG
-        return idx, process_single_apk(blocks, G, w2v_model)
+        result = process_apk_cached(smali_dir, w2v_model)
+        return idx, result
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
