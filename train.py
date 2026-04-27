@@ -858,7 +858,7 @@ def auto_select_k(X_train, y_train, candidate_k=None):
     # Train RF nhanh 1 lần để lấy importance
     rf = RandomForestClassifier(n_estimators=100, n_jobs=-1)
     rf.fit(X_train, y_train)
-    iimportance = rf.feature_importances_
+    importance = rf.feature_importances_
 
     best_k = candidate_k[0]
     best_auc = 0.0
