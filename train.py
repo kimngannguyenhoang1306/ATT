@@ -56,6 +56,7 @@ def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
             if os.path.exists(out_path) and os.path.exists(
                 os.path.join(out_path, "smali")
             ):
+                print(f"SKIP {label}: {apk[:30]} (already decoded)")
                 continue
 
             apk_tasks.append((apk_path, out_path, label, apk))
