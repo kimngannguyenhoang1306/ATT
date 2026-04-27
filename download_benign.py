@@ -153,18 +153,18 @@ def main():
     print(f"[3] Chuẩn bị danh sách download...")
     download_tasks = []
     skipped_count = 0
-    tried = 0
+    need_to_download = N_DOWNLOAD
 
     for pkg_name in pkg_names:
-        if len(download_tasks) >= N_DOWNLOAD * 5:  # tránh quá nhiều
+        if len(download_tasks) >= need_to_download:  # Chỉ chuẩn bị đúng số cần
             break
-        tried += 1
 
         # Kiểm tra xem APK đã tồn tại không
         safe_name = pkg_name.replace(".", "_")[:40]
         apk_path = os.path.join(OUT_DIR, f"{safe_name}.apk")
         if os.path.exists(apk_path) and os.path.getsize(apk_path) >= MIN_SIZE_KB * 1024:
             skipped_count += 1
+            need_to_download += 1  # Nếu đã có, tăng số cần tải lên để tìm 300 cái mới
             continue
 
         # Lấy URL
@@ -191,12 +191,20 @@ def main():
     results = {"ok": 0, "skip": 0, "fail": 0}
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [
-            executor.submit(download_apk, url, pkg_name, OUT_DIR, min_size, max_size)
+        futures = {
+            executor.submit(
+                download_apk, url, pkg_name, OUT_DIR, min_size, max_size
+            ): pkg_name
             for url, pkg_name, min_size, max_size in download_tasks
-        ]
+        }
 
         for f in tqdm(as_completed(futures), total=len(futures), desc="Downloading"):
+            if results["ok"] + results["skip"] >= N_DOWNLOAD:
+                # Đủ rồi, cancel những futures còn lại
+                for future in futures:
+                    future.cancel()
+                break
+
             pkg_name, status, detail = f.result()
 
             if status == "ok":
@@ -205,9 +213,6 @@ def main():
                 results["skip"] += 1
             else:
                 results["fail"] += 1
-
-            if results["ok"] + results["skip"] >= N_DOWNLOAD:
-                break
 
     print()
     print(f"[5] Kết quả:")
