@@ -765,15 +765,23 @@ def build_dataset(
 # 7. MODEL BUILDING
 # =========================
 def build_dnn(input_dim):
+    initializer = tf.keras.initializers.GlorotUniform(seed=42)
+
     model = tf.keras.Sequential(
         [
             tf.keras.Input(shape=(input_dim,)),
-            tf.keras.layers.Dense(512, activation="relu"),
+            tf.keras.layers.Dense(
+                512, activation="relu", kernel_initializer=initializer
+            ),
             tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.Dense(256, activation="relu"),
-            tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.Dense(128, activation="relu"),
+            tf.keras.layers.Dropout(0.3, seed=42),
+            tf.keras.layers.Dense(
+                256, activation="relu", kernel_initializer=initializer
+            ),
+            tf.keras.layers.Dropout(0.3, seed=42),
+            tf.keras.layers.Dense(
+                128, activation="relu", kernel_initializer=initializer
+            ),
             tf.keras.layers.Dense(1, activation="sigmoid"),
         ]
     )
@@ -855,10 +863,10 @@ def auto_select_k(X_train, y_train, candidate_k=None):
 
     print(f"\n🔍 auto_select_k: thử {candidate_k}...")
 
-    # Train RF nhanh 1 lần để lấy importance
-    rf = RandomForestClassifier(n_estimators=100, n_jobs=-1)
-    rf.fit(X_train, y_train)
-    importance = rf.feature_importances_
+    # Train DNN nhanh 1 lần để lấy importance
+    prelim = build_dnn(X_train.shape[1])
+    prelim.fit(X_train, y_train, epochs=3, verbose=0, batch_size=32)
+    importance = get_dnn_importance_scores(prelim)
 
     best_k = candidate_k[0]
     best_auc = 0.0
