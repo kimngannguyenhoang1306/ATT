@@ -165,6 +165,32 @@ def normalize_line(line: str) -> str:
     return line
 
 
+def extract_blocks_only(file_path):
+    blocks, current = [], []
+    try:
+        for line in open(file_path, encoding="utf-8", errors="ignore"):
+            line = normalize_line(line.strip())
+            if not line or line.startswith("."):
+                continue
+            if line.startswith(":"):
+                if current:
+                    blocks.append(current)
+                    current = []
+                continue
+            token = line.split()[0]
+            if token in CATEGORY:
+                current.append(CATEGORY[token])
+            if "goto" in token or "if-" in token or "return" in token:
+                if current:
+                    blocks.append(current)
+                    current = []
+        if current:
+            blocks.append(current)
+    except Exception:
+        pass
+    return blocks
+
+
 def build_cfg_from_file(file_path):
     """Build CFG từ một file smali."""
     G = nx.DiGraph()
@@ -211,6 +237,39 @@ def build_cfg_from_file(file_path):
             G.add_edge(i, i + 1)
 
     return G, blocks
+
+
+def build_blocks_only(smali_dir):
+    files = [
+        os.path.join(root, f)
+        for root, _, fs in os.walk(smali_dir)
+        for f in fs
+        if f.endswith(".smali")
+    ]
+
+    blocks = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for res in ex.map(extract_blocks_only, files):
+            blocks.extend(res)
+    return blocks
+
+
+def build_cfg_from_dir_fast(smali_dir, max_workers=8):
+    files = [
+        os.path.join(root, f)
+        for root, _, fs in os.walk(smali_dir)
+        for f in fs
+        if f.endswith(".smali")
+    ]
+
+    def parse_single(f):
+        return build_cfg_from_file(f)[1]  # chỉ cần list block
+
+    blocks = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for res in ex.map(parse_single, files):
+            blocks.extend(res)
+    return blocks
 
 
 def build_cfg_from_dir(smali_dir):
@@ -290,22 +349,12 @@ def graph_to_features(G):
 # =========================
 def train_opcode_embedding(all_blocks, vector_size=64):
     """Train Word2Vec trên tất cả blocks."""
-    sentences = []
-    for block in all_blocks:
-        if block:
-            sentences.append([str(op) for op in block])
-
-    if not sentences:
-        return None
+    sentences = [[str(op) for op in block] for block in all_blocks if block]
 
     model = Word2Vec(
-        sentences,
-        vector_size=vector_size,
-        window=5,
-        min_count=1,
-        sg=1,
-        workers=4,
+        sentences=sentences, vector_size=64, window=5, min_count=1, sg=1, workers=8
     )
+
     return model
 
 
@@ -462,7 +511,7 @@ def build_global_vocab(all_counters, min_freq=2, max_features=2000):
 
 def process_single_apk(smali_dir, w2v_model):
     """Process một APK và trả về raw features."""
-    G, blocks = build_cfg_from_dir(smali_dir)
+    G, blocks = build_cfg_from_dir_fast(smali_dir)
 
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
@@ -508,7 +557,6 @@ def process_apk_cached(smali_dir, w2v_model):
             "api": result["api"],
             "cfg": result["cfg"],
             "blocks": result["blocks"],
-            "G": build_cfg_from_dir(smali_dir)[0],  # lưu graph để tính lại emb sau
         }
         with open(cache_path, "wb") as f:
             pickle.dump(cache_data, f)
@@ -523,11 +571,14 @@ def build_dataset(apk_dirs, labels, max_workers=8, vector_size=64, use_cache=Tru
     Build dataset với proper vocabulary handling.
     use_cache=True sẽ dùng process_apk_cached thay vì process_single_apk.
     """
-    print("\n📊 Step 1: Collecting all blocks for embedding training...")
-
+    apk_blocks = {}
     all_blocks = []
+
+    print("\n📊 Step 1: Collecting blocks (ONE PASS ONLY)...")
+
     for smali_dir in tqdm(apk_dirs, desc="Scanning"):
-        _, blocks = build_cfg_from_dir(smali_dir)
+        blocks = build_blocks_only(smali_dir)
+        apk_blocks[smali_dir] = blocks
         all_blocks.extend(blocks)
 
     print(f"Total blocks collected: {len(all_blocks)}")
@@ -540,9 +591,9 @@ def build_dataset(apk_dirs, labels, max_workers=8, vector_size=64, use_cache=Tru
     results = [None] * len(apk_dirs)
 
     def worker(idx, smali_dir):
-        if use_cache:
-            return idx, process_apk_cached(smali_dir, w2v_model)
-        return idx, process_single_apk(smali_dir, w2v_model)
+        blocks = apk_blocks[smali_dir]
+        G, _ = build_cfg_from_dir(smali_dir)  # chỉ khi cần CFG
+        return idx, process_single_apk(blocks, G, w2v_model)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
@@ -579,8 +630,13 @@ def build_dataset(apk_dirs, labels, max_workers=8, vector_size=64, use_cache=Tru
     X = np.array(X)
     y = np.array(labels)
 
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, stratify=y, random_state=42
+    )
+
     scaler = StandardScaler()
-    X = scaler.fit_transform(X)
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
 
     feature_names = (
         list(mos_vocab.keys())
@@ -700,10 +756,14 @@ def auto_select_k(X_train, y_train, candidate_k=None):
         idx = np.argsort(importance)[-k:] if importance is not None else np.arange(k)
         X_k = X_train[:, idx]
 
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X_train, y_train, test_size=0.2, stratify=y_train
+        )
+
         rf = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42)
-        rf.fit(X_k, y_train)
-        probs = rf.predict_proba(X_k)[:, 1]
-        auc = roc_auc_score(y_train, probs)
+        rf.fit(X_tr[:, idx], y_tr)
+        probs = rf.predict_proba(X_val[:, idx])[:, 1]
+        auc = roc_auc_score(y_val, probs)
 
         print(f"  k={k:>5} → AUC={auc:.4f}")
 
