@@ -801,8 +801,10 @@ def get_dnn_importance_scores(model):
 
 def select_top_k_features(X_train, X_test, importance, k=3000):
     """Select top k features based on importance scores."""
-    if importance is None or len(importance) != X_train.shape[1]:
-        return X_train, X_test, np.arange(X_train.shape[1])
+    if importance is None:
+        importance = np.ones(X_train.shape[1])
+
+    importance = importance[: X_train.shape[1]]  # FIX mismatch safety
 
     k = min(k, X_train.shape[1])
     idx = np.argsort(importance)[-k:]
@@ -1026,7 +1028,9 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
     # Plot
     plot_roc(y_test, {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs})
 
-    selected_features = [feature_names[i] for i in selected_idx]
+    selected_features = [
+        feature_names[i] for i in selected_idx if i < len(feature_names)
+    ]
     dnn_importance = get_dnn_importance_scores(dnn)
     plot_feature_importance(dnn_importance, selected_features, top_n=20)
 
