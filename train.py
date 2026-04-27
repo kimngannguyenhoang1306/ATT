@@ -768,10 +768,12 @@ def build_dnn(input_dim):
     model = tf.keras.Sequential(
         [
             tf.keras.Input(shape=(input_dim,)),
+            tf.keras.layers.BatchNormalization(),  # 🔥 ADD THIS FIRST
             tf.keras.layers.Dense(512, activation="relu"),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dropout(0.3),
             tf.keras.layers.Dense(256, activation="relu"),
+            tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dropout(0.3),
             tf.keras.layers.Dense(128, activation="relu"),
             tf.keras.layers.Dense(1, activation="sigmoid"),
@@ -779,7 +781,7 @@ def build_dnn(input_dim):
     )
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),  # giảm LR
         loss="binary_crossentropy",
         metrics=["accuracy"],
     )
@@ -859,7 +861,9 @@ def auto_select_k(X_train, y_train, candidate_k=None):
 
     # Train DNN nhanh 1 lần để lấy importance
     prelim = build_dnn(X_train.shape[1])
-    prelim.fit(X_train, y_train, epochs=3, verbose=0, batch_size=32)
+    prelim.fit(
+        X_train, y_train, epochs=10, batch_size=32, validation_split=0.2, verbose=0
+    )
     importance = get_dnn_importance_scores(prelim)
 
     best_k = candidate_k[0]
@@ -1006,6 +1010,13 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
     rf_probs = rf.predict_proba(X_test_sel)[:, 1]
 
     print("→ Training DNN...")
+    from sklearn.utils.class_weight import compute_class_weight
+
+    class_weights = compute_class_weight(
+        class_weight="balanced", classes=np.unique(y_train), y=y_train
+    )
+
+    class_weight_dict = {i: w for i, w in enumerate(class_weights)}
     dnn = build_dnn(X_train_sel.shape[1])
     dnn.fit(
         X_train_sel,
@@ -1013,6 +1024,7 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
         epochs=10,
         batch_size=32,
         validation_split=0.1,
+        class_weight=class_weight_dict,  # 🔥 ADD THIS
         verbose=1,
     )
     dnn_probs = dnn.predict(X_test_sel, verbose=0).flatten()

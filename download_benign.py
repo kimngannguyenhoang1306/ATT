@@ -6,7 +6,7 @@ import threading
 
 # ── CẤU HÌNH ──────────────────────────────────────────────────
 OUT_DIR = "./raw_apk/benign"  # thư mục lưu APK
-N_DOWNLOAD = 300  # số APK muốn tải
+N_DOWNLOAD = 1000  # số APK muốn tải
 MIN_SIZE_KB = 50  # bỏ qua APK nhỏ hơn 50KB
 MAX_SIZE_MB = 10  # bỏ qua APK lớn hơn 10MB
 MAX_WORKERS = 8  # số threads để download
