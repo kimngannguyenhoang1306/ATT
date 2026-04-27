@@ -292,7 +292,7 @@ def build_dataset_fast(apk_dirs, labels, max_workers=8):
             if k in index:
                 X[i][index[k]] = 1
 
-    return X, np.array(labels)
+    return X, np.array(labels), features
 
 
 # =========================
@@ -464,12 +464,15 @@ def plot_roc(y_true, models_probs):
     plt.show()
 
 
-def plot_feature_importance(importance, top_n=20):
+def plot_feature_importance(importance, features, top_n=20):
     idx = np.argsort(importance)[-top_n:]
 
     plt.figure()
     plt.barh(range(top_n), importance[idx])
-    plt.yticks(range(top_n), idx)
+
+    labels = [str(features[i]) for i in idx]
+
+    plt.yticks(range(top_n), labels)
     plt.title("Top Feature Importance")
     plt.show()
 
@@ -495,7 +498,7 @@ if __name__ == "__main__":
     print("Dataset size:", len(apk_dirs))
 
     # Step 3: build dataset + train
-    X, y = build_dataset_fast(apk_dirs, labels, max_workers=8)
+    X, y, features = build_dataset_fast(apk_dirs, labels, max_workers=8)
     dnn, X_test, y_test = train(X, y)
     importance = get_dnn_importance_scores(dnn)
-    plot_feature_importance(importance)
+    plot_feature_importance(importance, features, top_n=20)
