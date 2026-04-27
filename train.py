@@ -325,13 +325,11 @@ def filter_infrequent_features(X, threshold=0.01):
 
 
 def get_dnn_importance_scores(model):
-    # lấy weights layer đầu tiên
-    weights = model.layers[0].get_weights()[0]  # shape: (features, neurons)
-
-    # importance = tổng abs
-    importance = np.sum(np.abs(weights), axis=1)
-
-    return importance
+    for layer in model.layers:
+        if len(layer.get_weights()) > 0:
+            weights = layer.get_weights()[0]
+            importance = np.sum(np.abs(weights), axis=1)
+            return importance
 
 
 def select_top_k_features(X_train, X_test, y_train, k=3000):
@@ -433,6 +431,8 @@ def train(X, y):
     # ===== STEP 6: ROC CURVE =====
     plot_roc(y_test, {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs})
 
+    return dnn, X_test, y_test
+
 
 def evaluate_model(name, y_true, probs):
     preds = (probs > 0.5).astype(int)
@@ -496,6 +496,6 @@ if __name__ == "__main__":
 
     # Step 3: build dataset + train
     X, y = build_dataset_fast(apk_dirs, labels, max_workers=8)
-    dnn = train(X, y)
+    dnn, X_test, y_test = train(X, y)
     importance = get_dnn_importance_scores(dnn)
     plot_feature_importance(importance)
