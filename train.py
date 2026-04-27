@@ -602,7 +602,11 @@ def build_global_vocab(all_counters, min_freq=2, max_features=2000):
     return vocab
 
 
-def process_single_apk(smali_dir, w2v_model, G, blocks):
+def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
+    if G is None or blocks is None:
+        blocks = get_blocks_cached(smali_dir)
+        G = build_cfg_from_blocks(blocks)
+
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
     cfg_feat = graph_to_features(G)
@@ -617,41 +621,48 @@ def process_single_apk(smali_dir, w2v_model, G, blocks):
     }
 
 
-# ✅ BỔ SUNG: Cache pkl để tránh re-process APK đã xử lý
 def process_apk_cached(smali_dir, w2v_model):
-    """
-    Process APK với caching pkl.
-    Lần đầu chạy sẽ lưu cache; lần sau load thẳng từ file.
-    Lưu ý: cache KHÔNG chứa embedding vì w2v_model có thể thay đổi.
-    """
     cache_path = smali_dir.rstrip("/") + "_features.pkl"
 
-    if os.path.exists(cache_path):
-        try:
+    try:
+        if os.path.exists(cache_path):
             with open(cache_path, "rb") as f:
                 cached = pickle.load(f)
-            # Tính lại embedding với model hiện tại (không cache embedding)
-            G, blocks = cached["G"], cached["blocks"]
-            emb = graph_embedding(G, w2v_model)
-            cached["emb"] = emb
-            return cached
-        except Exception:
-            pass  # cache bị lỗi → tính lại
 
-    result = process_single_apk(smali_dir, w2v_model)
+            blocks = cached["blocks"]
+            G = cached["cfg_graph"]
 
-    # Lưu cache (không lưu emb vì phụ thuộc model)
+            return {
+                "mos": cached["mos"],
+                "api": cached["api"],
+                "cfg": cached["cfg"],
+                "blocks": blocks,
+                "emb": graph_embedding(G, w2v_model),
+            }
+
+    except Exception:
+        pass
+
+    # rebuild full
+    blocks = get_blocks_cached(smali_dir)
+    G = build_cfg_from_blocks(blocks)
+
+    result = process_single_apk(smali_dir, w2v_model, G, blocks)
+
     try:
-        cache_data = {
-            "mos": result["mos"],
-            "api": result["api"],
-            "cfg": result["cfg"],
-            "blocks": result["blocks"],
-        }
         with open(cache_path, "wb") as f:
-            pickle.dump(cache_data, f)
-    except Exception as e:
-        print(f"Warning: Could not save cache for {smali_dir}: {e}")
+            pickle.dump(
+                {
+                    "mos": result["mos"],
+                    "api": result["api"],
+                    "cfg": result["cfg"],
+                    "blocks": blocks,
+                    "cfg_graph": G,
+                },
+                f,
+            )
+    except Exception:
+        pass
 
     return result
 
@@ -693,8 +704,7 @@ def build_dataset(
     results = [None] * len(apk_dirs)
 
     def worker(idx, smali_dir):
-        result = process_apk_cached(smali_dir, w2v_model)
-        return idx, result
+        return idx, process_apk_cached(smali_dir, w2v_model)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
