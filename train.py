@@ -499,7 +499,7 @@ def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
         negative=15,  # tăng stability embedding malware patterns
         sample=1e-4,  # subsampling opcode phổ biến (move, const,...)
         workers=os.cpu_count(),
-        epochs=8,
+        epochs=1,
     )
 
     sentences = SentenceIterable(all_blocks)
