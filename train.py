@@ -1125,7 +1125,7 @@ def plot_feature_importance(importance, features, top_n=20, save_path=None):
     plt.figure(figsize=(10, 8))
     plt.barh(range(top_n), importance[idx], color="steelblue")
 
-    labels = [str(features[i])[:40] for i in idx]
+    labels = [" ".join(f) if isinstance(f, tuple) else str(f) for f in features]
     plt.yticks(range(top_n), labels)
     plt.xlabel("Importance Score")
     plt.title(f"Top {top_n} Feature Importance")
@@ -1230,12 +1230,39 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     selected_features = [
         feature_names[i] for i in selected_idx if i < len(feature_names)
     ]
-    dnn_importance = get_dnn_importance_scores(dnn)
+    # Tách index symbolic vs embedding
+    symbolic_idx = []
+    embedding_idx = []
+
+    for i, f in zip(selected_idx, selected_features):
+        if isinstance(f, tuple) or f == "API_CALL" or "COUNT" in str(f):
+            symbolic_idx.append(i)
+        elif str(f).startswith("emb_"):
+            embedding_idx.append(i)
+
+    importance = get_dnn_importance_scores(dnn)
+
+    # align lại chiều
+    importance = importance[: len(selected_idx)]
+
+    sym_features = [feature_names[i] for i in symbolic_idx]
+    sym_importance = [importance[selected_idx.tolist().index(i)] for i in symbolic_idx]
+
+    # Embedding
+    emb_features = [feature_names[i] for i in embedding_idx]
+    emb_importance = [importance[selected_idx.tolist().index(i)] for i in embedding_idx]
+
     plot_feature_importance(
-        dnn_importance,
-        selected_features,
+        np.array(sym_importance),
+        sym_features,
         top_n=20,
-        save_path="figs/feature_importance.png",
+        save_path="figs/feature_symbolic.png",
+    )
+    plot_feature_importance(
+        np.array(emb_importance),
+        emb_features,
+        top_n=20,
+        save_path="figs/feature_embedding.png",
     )
 
     return {
