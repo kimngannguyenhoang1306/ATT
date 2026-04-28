@@ -561,7 +561,11 @@ def graph_embedding(blocks, w2v_model, vector_size=32):
     vecs = []
     wv = w2v_model.wv  # cache
 
-    for block in blocks:
+    import random
+
+    sampled_blocks = blocks if len(blocks) <= 5000 else random.sample(blocks, 5000)
+
+    for block in sampled_blocks:
         for op in block:
             key = str(op)
             if key in wv:
@@ -747,7 +751,9 @@ def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
         blocks = get_blocks_cached(smali_dir)
         G = build_cfg_from_blocks(blocks)
 
-    blocks = obfuscate_blocks(blocks)
+    # blocks = obfuscate_blocks(blocks)
+    if len(blocks) > 20000:
+        blocks = blocks[:20000]
 
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
@@ -862,16 +868,38 @@ def build_dataset(
 
     print("\n🔧 Step 3: Extracting features from all APKs...")
 
-    results = [None] * len(apk_dirs)
+    results = []
+    aug_results = []
 
     def worker(idx, smali_dir):
-        return idx, process_apk_cached(smali_dir, w2v_model)
+        data = process_apk_cached(smali_dir, w2v_model)
+
+        # 🔥 CHỈ augment khi build dataset
+        blocks_aug = obfuscate_blocks(data["blocks"])
+
+        mos = build_mos_from_blocks(blocks_aug)
+        api = extract_api_sequence(blocks_aug)
+        cfg = graph_to_features_fast(blocks_aug)
+        emb = graph_embedding(blocks_aug, w2v_model)
+
+        data_aug = {
+            "mos": mos,
+            "api": api,
+            "cfg": cfg,
+            "emb": emb,
+        }
+
+        return idx, data, data_aug
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
         for f in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
-            idx, result = f.result()
-            results[idx] = result
+            idx, original, augmented = f.result()
+            results.append(original)
+            aug_results.append(augmented)
+
+    results = results + aug_results
+    labels = labels + labels
 
     print("\n📚 Step 4: Building global vocabulary...")
 
