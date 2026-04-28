@@ -1048,6 +1048,9 @@ def auto_select_k(X_train, y_train, candidate_k=None):
 # =========================
 # 8. TRAINING & EVALUATION
 # =========================
+from sklearn.metrics import classification_report
+
+
 def evaluate_model(name, y_true, probs, threshold=0.5):
     preds = (probs > threshold).astype(int)
 
@@ -1062,7 +1065,9 @@ def evaluate_model(name, y_true, probs, threshold=0.5):
     print(f"AUC:      {auc:.4f}")
     print(f"Confusion Matrix:\n{cm}")
 
-    return {"accuracy": acc, "auc": auc, "confusion_matrix": cm}
+    # 🔥 THÊM DÒNG NÀY
+    print("\nClassification Report:")
+    print(classification_report(y_true, preds))
 
 
 def plot_roc(y_true, models_probs, save_path=None):
@@ -1125,9 +1130,12 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
     # ✅ STEP 1: Lọc feature xuất hiện quá ít
     print("\n🔎 Step 1: Filtering infrequent features...")
     X, freq_mask = filter_infrequent_features(X, threshold=0.01)
+    print("\n🔎 FEATURE FILTERING")
+    print("=" * 40)
+    print(f"Before: {len(feature_names)} features")
     # Cập nhật feature_names theo mask
     feature_names = [f for f, keep in zip(feature_names, freq_mask) if keep]
-    print(f"After filter: {X.shape}")
+    print(f"After : {X.shape[1]} features")
 
     # STEP 2: Split
     X_train, X_test, y_train, y_test = train_test_split(
@@ -1136,7 +1144,18 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
-    print(f"Train: {X_train.shape}, Test: {X_test.shape}")
+    print("\n📊 TRAIN / TEST SPLIT")
+    print("=" * 40)
+    print(f"Train samples: {len(y_train)}")
+    print(f"Test samples : {len(y_test)}")
+
+    print(f"Train class balance:")
+    print(f"  Benign : {(y_train==0).sum()}")
+    print(f"  Malware: {(y_train==1).sum()}")
+
+    print(f"Test class balance:")
+    print(f"  Benign : {(y_test==0).sum()}")
+    print(f"  Malware: {(y_test==1).sum()}")
 
     # ✅ STEP 3: Tự động chọn k
     best_k, _ = auto_select_k(X_train, y_train, candidate_k=[500, 1000, 2000, 3000])
@@ -1231,8 +1250,15 @@ if __name__ == "__main__":
                 apk_dirs.append(smali_path)
                 labels.append(label)
 
-    print(f"\n📱 Dataset size: {len(apk_dirs)} APKs")
-    print(f"   Benign: {labels.count(0)}, Malware: {labels.count(1)}")
+    total = len(labels)
+    benign = labels.count(0)
+    malware = labels.count(1)
+
+    print("\n📊 DATASET STATISTICS")
+    print("=" * 40)
+    print(f"Total samples : {total}")
+    print(f"Benign        : {benign} ({benign/total:.2%})")
+    print(f"Malware       : {malware} ({malware/total:.2%})")
 
     if len(apk_dirs) == 0:
         print("No APKs found. Please check the directory structure.")
@@ -1247,6 +1273,12 @@ if __name__ == "__main__":
         max_workers=8,
         use_cache=True,
     )
+
+    print("\n📦 FEATURE DATASET")
+    print("=" * 40)
+    print(f"Feature shape : {X.shape}")
+    print(f"#Features     : {X.shape[1]}")
+    print(f"#Samples      : {X.shape[0]}")
 
     # Step 4: Train and evaluate
     output = train_and_evaluate(X, y, feature_names)
