@@ -1125,7 +1125,10 @@ def plot_feature_importance(importance, features, top_n=20, save_path=None):
     plt.figure(figsize=(10, 8))
     plt.barh(range(top_n), importance[idx], color="steelblue")
 
-    labels = [" ".join(f) if isinstance(f, tuple) else str(f) for f in features]
+    labels = [
+        " ".join(features[i]) if isinstance(features[i], tuple) else str(features[i])
+        for i in idx
+    ]
     plt.yticks(range(top_n), labels)
     plt.xlabel("Importance Score")
     plt.title(f"Top {top_n} Feature Importance")
@@ -1227,9 +1230,7 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
         save_path="figs/roc_comparison.png",
     )
 
-    selected_features = [
-        feature_names[i] for i in selected_idx if i < len(feature_names)
-    ]
+    selected_features = [feature_names[i] for i in selected_idx]
     # Tách index symbolic vs embedding
     symbolic_idx = []
     embedding_idx = []
@@ -1245,13 +1246,14 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     # align lại chiều
     importance = importance[: len(selected_idx)]
 
+    idx_map = {feat_idx: pos for pos, feat_idx in enumerate(selected_idx)}
+
     sym_features = [feature_names[i] for i in symbolic_idx]
-    sym_importance = [importance[selected_idx.tolist().index(i)] for i in symbolic_idx]
+    sym_importance = [importance[idx_map[i]] for i in symbolic_idx]
 
     # Embedding
     emb_features = [feature_names[i] for i in embedding_idx]
-    emb_importance = [importance[selected_idx.tolist().index(i)] for i in embedding_idx]
-
+    emb_importance = [importance[idx_map[i]] for i in embedding_idx]
     plot_feature_importance(
         np.array(sym_importance),
         sym_features,
