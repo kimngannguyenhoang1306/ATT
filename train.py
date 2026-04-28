@@ -544,7 +544,7 @@ def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
         negative=15,
         sample=1e-4,
         workers=os.cpu_count(),
-        epochs=1,
+        epochs=8,
     )
 
     sentences = SentenceIterable(all_blocks)
