@@ -698,10 +698,56 @@ def build_global_vocab(all_counters, min_freq=2, max_features=2000):
     return vocab
 
 
+import random
+
+JUNK_OPS = [
+    ["const/4 v0, 0x1", "add-int v0, v0, v0"],
+    ["const/4 v1, 0x0", "if-eq v1, v1, :label"],
+]
+
+
+def inject_junk_blocks(blocks, prob=0.3):
+    new_blocks = []
+
+    for block in blocks:
+        new_blocks.append(block)
+
+        if random.random() < prob:
+            junk = random.choice(JUNK_OPS)
+            junk_encoded = [CATEGORY.get(op.split()[0], "X") for op in junk]
+            new_blocks.append(junk_encoded)
+
+    return new_blocks
+
+
+def shuffle_blocks(blocks, prob=0.2):
+    if random.random() < prob:
+        random.shuffle(blocks)
+    return blocks
+
+
+def duplicate_blocks(blocks, prob=0.2):
+    new_blocks = []
+    for b in blocks:
+        new_blocks.append(b)
+        if random.random() < prob:
+            new_blocks.append(b)  # duplicate
+    return new_blocks
+
+
+def obfuscate_blocks(blocks):
+    blocks = inject_junk_blocks(blocks, prob=0.3)
+    blocks = duplicate_blocks(blocks, prob=0.2)
+    blocks = shuffle_blocks(blocks, prob=0.1)
+    return blocks
+
+
 def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
     if G is None or blocks is None:
         blocks = get_blocks_cached(smali_dir)
         G = build_cfg_from_blocks(blocks)
+
+    blocks = obfuscate_blocks(blocks)
 
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
