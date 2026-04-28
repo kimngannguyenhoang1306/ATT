@@ -439,18 +439,18 @@ def graph_to_features(G):
 # =========================
 # 5. EMBEDDING
 # =========================
-def train_opcode_embedding(all_blocks, vector_size=64):
+def train_opcode_embedding(all_blocks, vector_size=32):
     """Train Word2Vec trên tất cả blocks."""
     sentences = [[str(op) for op in block] for block in all_blocks if block]
 
     model = Word2Vec(
-        sentences=sentences, vector_size=64, window=5, min_count=1, sg=1, workers=8
+        sentences=sentences, vector_size=32, window=5, min_count=1, sg=1, workers=8
     )
 
     return model
 
 
-def encode_block(block, w2v_model, vector_size=64):
+def encode_block(block, w2v_model, vector_size=32):
     if w2v_model is None or not block:
         return np.zeros(vector_size)
 
@@ -466,21 +466,29 @@ def encode_block(block, w2v_model, vector_size=64):
     return np.mean(vectors, axis=0)
 
 
-def graph_embedding(G, w2v_model, vector_size=64):
+def graph_embedding(G, w2v_model, vector_size=32):
     if G.number_of_nodes() == 0:
-        print("Warning: empty CFG")
         return np.zeros(vector_size)
 
-    node_vecs = []
+    all_ops = []
+
     for _, data in G.nodes(data=True):
-        block = data.get("features", [])
-        vec = encode_block(block, w2v_model, vector_size)
-        node_vecs.append(vec)
+        all_ops.extend(data.get("features", []))
 
-    if not node_vecs:
+    if not all_ops:
         return np.zeros(vector_size)
 
-    return np.mean(node_vecs, axis=0)
+    vecs = []
+    wv = w2v_model.wv
+
+    for op in all_ops:
+        if op in wv:
+            vecs.append(wv[op])
+
+    if not vecs:
+        return np.zeros(vector_size)
+
+    return np.mean(vecs, axis=0)
 
 
 # =========================
@@ -657,7 +665,6 @@ def process_apk_cached(smali_dir, w2v_model):
                     "api": result["api"],
                     "cfg": result["cfg"],
                     "blocks": blocks,
-                    "cfg_graph": G,
                 },
                 f,
             )
@@ -668,7 +675,7 @@ def process_apk_cached(smali_dir, w2v_model):
 
 
 def build_dataset(
-    apk_dirs, labels, max_workers=8, vector_size=64, use_cache=True, test_size=0.2
+    apk_dirs, labels, max_workers=8, vector_size=32, use_cache=True, test_size=0.2
 ):
     """
     Build dataset với proper vocabulary handling.
@@ -690,14 +697,23 @@ def build_dataset(
     print(f"Total blocks collected: {len(all_blocks)}")
 
     print("\n🧠 Step 2: Training Word2Vec embedding...")
-    w2v_model = load_w2v_model()
+    import hashlib
 
-    if w2v_model is None:
+    def hash_blocks(all_blocks):
+        return hashlib.md5(
+            " ".join([" ".join(map(str, b)) for b in all_blocks]).encode()
+        ).hexdigest()
+
+    corpus_hash = hash_blocks(all_blocks)
+    model_path = f"w2v_{corpus_hash}.model"
+
+    if os.path.exists(model_path):
+        w2v_model = Word2Vec.load(model_path)
+        print("📦 Loaded cached Word2Vec")
+    else:
         print("🧠 Training Word2Vec...")
         w2v_model = train_opcode_embedding(all_blocks, vector_size)
-        save_w2v_model(w2v_model)
-    else:
-        print("📦 Loaded cached Word2Vec model")
+        w2v_model.save(model_path)
 
     print("\n🔧 Step 3: Extracting features from all APKs...")
 
