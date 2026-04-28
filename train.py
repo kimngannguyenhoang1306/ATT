@@ -422,16 +422,29 @@ def extract_api_sequence(blocks):
     return api_seq
 
 
-def graph_to_features(G):
+# def graph_to_features(G):
+#     features = Counter()
+
+#     for _, data in G.nodes(data=True):
+#         block = data.get("features", [])
+#         if block:
+#             features[tuple(block)] += 1
+
+#     features[("EDGE_COUNT",)] = G.number_of_edges()
+#     features[("NODE_COUNT",)] = G.number_of_nodes()
+
+#     return features
+
+
+def graph_to_features_fast(blocks):
     features = Counter()
 
-    for _, data in G.nodes(data=True):
-        block = data.get("features", [])
+    for block in blocks:
         if block:
             features[tuple(block)] += 1
 
-    features[("EDGE_COUNT",)] = G.number_of_edges()
-    features[("NODE_COUNT",)] = G.number_of_nodes()
+    features[("EDGE_COUNT",)] = len(blocks) - 1
+    features[("NODE_COUNT",)] = len(blocks)
 
     return features
 
@@ -525,16 +538,35 @@ def encode_block(block, w2v_model, vector_size=32):
     return np.mean(vectors, axis=0)
 
 
-def graph_embedding(G, op_cache, vector_size=32):
-    if G.number_of_nodes() == 0:
+# def graph_embedding(G, op_cache, vector_size=32):
+#     if G.number_of_nodes() == 0:
+#         return np.zeros(vector_size)
+
+#     vecs = []
+
+#     for _, data in G.nodes(data=True):
+#         for op in data.get("features", []):
+#             if op in op_cache:
+#                 vecs.append(op_cache[op])
+
+#     if not vecs:
+#         return np.zeros(vector_size)
+
+#     return np.mean(vecs, axis=0)
+
+
+def graph_embedding(blocks, w2v_model, vector_size=32):
+    if w2v_model is None:
         return np.zeros(vector_size)
 
     vecs = []
+    wv = w2v_model.wv  # cache
 
-    for _, data in G.nodes(data=True):
-        for op in data.get("features", []):
-            if op in op_cache:
-                vecs.append(op_cache[op])
+    for block in blocks:
+        for op in block:
+            key = str(op)
+            if key in wv:
+                vecs.append(wv[key])
 
     if not vecs:
         return np.zeros(vector_size)
@@ -623,7 +655,10 @@ def update_dataset(
 
     # build dataset cho APK mới
     X_new, y_new, feature_names, scaler = build_dataset_fn(
-        new_apks, new_labels, max_workers
+        apk_dirs=new_apks,
+        labels=new_labels,
+        max_workers=max_workers,
+        use_cache=use_cache,
     )
 
     # merge
@@ -671,8 +706,8 @@ def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
 
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
-    cfg_feat = graph_to_features(G)
-    emb = graph_embedding(G, w2v_model)
+    cfg_feat = graph_to_features_fast(blocks)
+    emb = graph_embedding(blocks, w2v_model)
 
     return {
         "mos": mos,
@@ -692,7 +727,6 @@ def process_apk_cached(smali_dir, w2v_model):
                 cached = pickle.load(f)
 
             blocks = cached["blocks"]
-            G = cached["cfg_graph"]
 
             return {
                 "mos": cached["mos"],
@@ -707,9 +741,9 @@ def process_apk_cached(smali_dir, w2v_model):
 
     # rebuild full
     blocks = get_blocks_cached(smali_dir)
-    G = build_cfg_from_blocks(blocks)
+    # G = build_cfg_from_blocks(blocks)
 
-    result = process_single_apk(smali_dir, w2v_model, G, blocks)
+    result = process_single_apk(smali_dir, w2v_model, None, blocks)
 
     try:
         with open(cache_path, "wb") as f:
@@ -761,13 +795,10 @@ def build_dataset(
 
     def get_w2v_cache_path(all_blocks, vector_size):
         h = hashlib.md5(
-            (
-                str(vector_size)
-                + " ".join([" ".join(map(str, b)) for b in all_blocks[:5000]])
-            ).encode()
+            (" ".join([" ".join(map(str, b)) for b in all_blocks])).encode()
         ).hexdigest()
 
-        return f"w2v_{h}.model"
+        return f"w2v_{vector_size}_{h}.model"
 
     corpus_hash = hash_blocks(all_blocks)
     model_path = model_path = get_w2v_cache_path(all_blocks, vector_size)
@@ -824,14 +855,6 @@ def build_dataset(
     X = np.array(X)
     y = np.array(labels)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=42
-    )
-
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-
     feature_names = (
         list(mos_vocab.keys())
         + list(api_vocab.keys())
@@ -841,7 +864,7 @@ def build_dataset(
 
     print(f"\n✅ Dataset built: X={X.shape}, y={y.shape}")
 
-    return X, y, feature_names, scaler
+    return X, y, feature_names
 
 
 # =========================
@@ -1063,6 +1086,9 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=42
     )
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
     print(f"Train: {X_train.shape}, Test: {X_test.shape}")
 
     # ✅ STEP 3: Tự động chọn k
