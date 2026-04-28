@@ -14,33 +14,25 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from gensim.models import Word2Vec
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 import tensorflow as tf
+from sklearn.feature_extraction.text import TfidfVectorizer
+import hashlib
+import json
 
-
-W2V_CACHE_PATH = "w2v_model.model"
-
-
-def save_w2v_model(model):
-    model.save(W2V_CACHE_PATH)
-
-
-def load_w2v_model():
-    if os.path.exists(W2V_CACHE_PATH):
-        return Word2Vec.load(W2V_CACHE_PATH)
-    return None
+TFIDF_MODEL_PATH = "tfidf_vectorizer.pkl"
+TFIDF_MATRIX_PATH = "tfidf_matrix.npy"
 
 
 def get_feature_cache_path(smali_dir):
     return smali_dir.rstrip("/") + "_features.pkl"
 
 
-def process_apk_features_cached(smali_dir, w2v_model):
+def process_apk_features_cached(smali_dir):
     cache_path = get_feature_cache_path(smali_dir)
 
     if os.path.exists(cache_path):
@@ -52,7 +44,7 @@ def process_apk_features_cached(smali_dir, w2v_model):
 
     blocks = get_blocks_cached(smali_dir)
     G = build_cfg_from_blocks(blocks)
-    result = process_single_apk(smali_dir, w2v_model, G, blocks)
+    result = process_single_apk(smali_dir, G, blocks)
 
     try:
         with open(cache_path, "wb") as f:
@@ -439,48 +431,6 @@ def graph_to_features(G):
 # =========================
 # 5. EMBEDDING
 # =========================
-def train_opcode_embedding(all_blocks, vector_size=64):
-    """Train Word2Vec trên tất cả blocks."""
-    sentences = [[str(op) for op in block] for block in all_blocks if block]
-
-    model = Word2Vec(
-        sentences=sentences, vector_size=64, window=5, min_count=1, sg=1, workers=8
-    )
-
-    return model
-
-
-def encode_block(block, w2v_model, vector_size=64):
-    if w2v_model is None or not block:
-        return np.zeros(vector_size)
-
-    vectors = []
-    for op in block:
-        key = str(op)
-        if key in w2v_model.wv:
-            vectors.append(w2v_model.wv[key])
-
-    if not vectors:
-        return np.zeros(vector_size)
-
-    return np.mean(vectors, axis=0)
-
-
-def graph_embedding(G, w2v_model, vector_size=64):
-    if G.number_of_nodes() == 0:
-        print("Warning: empty CFG")
-        return np.zeros(vector_size)
-
-    node_vecs = []
-    for _, data in G.nodes(data=True):
-        block = data.get("features", [])
-        vec = encode_block(block, w2v_model, vector_size)
-        node_vecs.append(vec)
-
-    if not node_vecs:
-        return np.zeros(vector_size)
-
-    return np.mean(node_vecs, axis=0)
 
 
 # =========================
@@ -537,13 +487,11 @@ def update_dataset(
 
     if cached is None:
         print("No cache found → building new dataset...")
-        X, y, feature_names, scaler = build_dataset_fn(
-            apk_dirs, labels, max_workers, use_cache
-        )
-        save_dataset(cache_dir, X, y, feature_names, scaler, apk_dirs)
-        return X, y, feature_names, scaler
+        X, y, feature_names = build_dataset_fn(apk_dirs, labels, max_workers, use_cache)
+        save_dataset(cache_dir, X, y, feature_names, apk_dirs)
+        return X, y, feature_names
 
-    X_old, y_old, feature_names, scaler, apk_index = cached
+    X_old, y_old, feature_names, apk_index = cached
 
     # APK mới
     new_apks = []
@@ -556,13 +504,19 @@ def update_dataset(
 
     print(f"🆕 New APKs found: {len(new_apks)}")
 
+    if len(new_apks) > 0:
+        if os.path.exists(TFIDF_CACHE):
+            os.remove(TFIDF_CACHE)
+        if os.path.exists(TFIDF_MODEL):
+            os.remove(TFIDF_MODEL)
+        if os.path.exists(TFIDF_META):
+            os.remove(TFIDF_META)
+
     if len(new_apks) == 0:
-        return X_old, y_old, feature_names, scaler
+        return X_old, y_old, feature_names
 
     # build dataset cho APK mới
-    X_new, y_new, feature_names, scaler = build_dataset_fn(
-        new_apks, new_labels, max_workers
-    )
+    X_new, y_new, feature_names = build_dataset_fn(new_apks, new_labels, max_workers)
 
     # merge
     X = np.vstack([X_old, X_new])
@@ -573,11 +527,11 @@ def update_dataset(
         apk_index[hash_dir(p)] = p
 
     # save lại
-    save_dataset(cache_dir, X, y, feature_names, scaler, list(apk_index.values()))
+    save_dataset(cache_dir, X, y, feature_names, list(apk_index.values()))
 
     print("✅ Dataset updated successfully")
 
-    return X, y, feature_names, scaler
+    return X, y, feature_names
 
 
 def counter_to_vector_with_vocab(counter, vocab, default_size=2000):
@@ -602,7 +556,7 @@ def build_global_vocab(all_counters, min_freq=2, max_features=2000):
     return vocab
 
 
-def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
+def process_single_apk(smali_dir, G=None, blocks=None):
     if G is None or blocks is None:
         blocks = get_blocks_cached(smali_dir)
         G = build_cfg_from_blocks(blocks)
@@ -610,7 +564,7 @@ def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
     cfg_feat = graph_to_features(G)
-    emb = graph_embedding(G, w2v_model)
+    emb = None
 
     return {
         "mos": mos,
@@ -621,7 +575,7 @@ def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
     }
 
 
-def process_apk_cached(smali_dir, w2v_model):
+def process_apk_cached(smali_dir):
     cache_path = smali_dir.rstrip("/") + "_features.pkl"
 
     try:
@@ -630,14 +584,14 @@ def process_apk_cached(smali_dir, w2v_model):
                 cached = pickle.load(f)
 
             blocks = cached["blocks"]
-            G = cached["cfg_graph"]
+            G = build_cfg_from_blocks(blocks)
 
             return {
                 "mos": cached["mos"],
                 "api": cached["api"],
                 "cfg": cached["cfg"],
                 "blocks": blocks,
-                "emb": graph_embedding(G, w2v_model),
+                "emb": None,
             }
 
     except Exception:
@@ -647,7 +601,7 @@ def process_apk_cached(smali_dir, w2v_model):
     blocks = get_blocks_cached(smali_dir)
     G = build_cfg_from_blocks(blocks)
 
-    result = process_single_apk(smali_dir, w2v_model, G, blocks)
+    result = process_single_apk(smali_dir, G, blocks)
 
     try:
         with open(cache_path, "wb") as f:
@@ -657,7 +611,6 @@ def process_apk_cached(smali_dir, w2v_model):
                     "api": result["api"],
                     "cfg": result["cfg"],
                     "blocks": blocks,
-                    "cfg_graph": G,
                 },
                 f,
             )
@@ -667,9 +620,7 @@ def process_apk_cached(smali_dir, w2v_model):
     return result
 
 
-def build_dataset(
-    apk_dirs, labels, max_workers=8, vector_size=64, use_cache=True, test_size=0.2
-):
+def build_dataset(apk_dirs, labels, max_workers=8, use_cache=True, test_size=0.2):
     """
     Build dataset với proper vocabulary handling.
     use_cache=True sẽ dùng process_apk_cached thay vì process_single_apk.
@@ -689,22 +640,66 @@ def build_dataset(
 
     print(f"Total blocks collected: {len(all_blocks)}")
 
-    print("\n🧠 Step 2: Training Word2Vec embedding...")
-    w2v_model = load_w2v_model()
+    print("\n🧠 Step TF-IDF feature extraction...")
 
-    if w2v_model is None:
-        print("🧠 Training Word2Vec...")
-        w2v_model = train_opcode_embedding(all_blocks, vector_size)
-        save_w2v_model(w2v_model)
+    def hash_dataset(apk_dirs):
+        h = hashlib.md5()
+
+        for d in sorted(apk_dirs):
+            h.update(d.encode())
+
+            # thêm block signature (quan trọng)
+            try:
+                mtime = str(os.path.getmtime(d))
+                h.update(mtime.encode())
+            except:
+                pass
+
+        return h.hexdigest()
+
+    TFIDF_MODEL = "tfidf_vectorizer.pkl"
+    TFIDF_META = "tfidf_meta.json"
+
+    dataset_hash = hash_dataset(apk_dirs)
+
+    texts = []
+    for d in apk_dirs:
+        blocks = apk_blocks[d]
+        texts.append(" ".join(" ".join(b) for b in blocks))
+
+    # check cache
+    need_retrain = True
+
+    if os.path.exists(TFIDF_META) and os.path.exists(TFIDF_MODEL):
+        with open(TFIDF_META, "r") as f:
+            meta = json.load(f)
+        if meta.get("hash") == dataset_hash:
+            need_retrain = False
+
+    if not need_retrain:
+        tfidf = joblib.load(TFIDF_MODEL)
+
+        try:
+            X_tfidf = tfidf.transform(texts).toarray()
+
+            if X_tfidf.shape[0] != len(texts):
+                raise ValueError("TF-IDF mismatch")
+        except:
+            need_retrain = True
     else:
-        print("📦 Loaded cached Word2Vec model")
+        tfidf = TfidfVectorizer(ngram_range=(1, 3), max_features=50000, min_df=2)
+        X_tfidf = tfidf.fit_transform(texts).toarray()
+
+        joblib.dump(tfidf, TFIDF_MODEL)
+        with open(TFIDF_META, "w") as f:
+            json.dump({"hash": dataset_hash}, f)
 
     print("\n🔧 Step 3: Extracting features from all APKs...")
 
     results = [None] * len(apk_dirs)
 
     def worker(idx, smali_dir):
-        return idx, process_apk_cached(smali_dir, w2v_model)
+        return idx, process_apk_cached(smali_dir)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
@@ -729,14 +724,15 @@ def build_dataset(
     print("\n🔢 Step 5: Building feature vectors...")
 
     X = []
-    for r in results:
+    for i, r in enumerate(results):
         mos_vec = counter_to_vector_with_vocab(r["mos"], mos_vocab)
         api_vec = counter_to_vector_with_vocab(r["api"], api_vocab)
         cfg_vec = counter_to_vector_with_vocab(r["cfg"], cfg_vocab)
-        emb_vec = r["emb"]
 
-        combined = np.concatenate([mos_vec, api_vec, cfg_vec, emb_vec])
-        X.append(combined)
+        hybrid = np.concatenate(
+            [mos_vec, api_vec, cfg_vec, X_tfidf[i]]  # 👈 thêm TF-IDF
+        )
+        X.append(hybrid)
 
     X = np.array(X)
     y = np.array(labels)
@@ -745,20 +741,16 @@ def build_dataset(
         X, y, test_size=test_size, stratify=y, random_state=42
     )
 
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-
     feature_names = (
         list(mos_vocab.keys())
         + list(api_vocab.keys())
         + list(cfg_vocab.keys())
-        + [f"emb_{i}" for i in range(vector_size)]
+        + [f"tfidf_{i}" for i in range(X_tfidf.shape[1])]
     )
 
     print(f"\n✅ Dataset built: X={X.shape}, y={y.shape}")
 
-    return X, y, feature_names, scaler
+    return X, y, feature_names
 
 
 # =========================
@@ -980,6 +972,10 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=42
     )
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+
     print(f"Train: {X_train.shape}, Test: {X_test.shape}")
 
     # ✅ STEP 3: Tự động chọn k
@@ -1050,6 +1046,7 @@ def train_and_evaluate(X, y, feature_names, test_size=0.2):
         "models": {"svm": svm, "rf": rf, "dnn": dnn},
         "results": results,
         "selected_idx": selected_idx,
+        "scaler": scaler,
     }
 
 
@@ -1083,7 +1080,7 @@ if __name__ == "__main__":
         exit(1)
 
     # Step 3: Build dataset (use_cache=True để tận dụng pkl cache)
-    X, y, feature_names, scaler = update_dataset(
+    X, y, feature_names = update_dataset(
         cache_dir="dataset_cache",
         apk_dirs=apk_dirs,
         labels=labels,
