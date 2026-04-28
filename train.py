@@ -663,9 +663,18 @@ def build_dataset(apk_dirs, labels, max_workers=8, use_cache=True, test_size=0.2
     dataset_hash = hash_dataset(apk_dirs)
 
     texts = []
-    for d in apk_dirs:
+    valid_indices = []
+
+    for i, d in enumerate(apk_dirs):
         blocks = apk_blocks[d]
-        texts.append(" ".join(" ".join(b) for b in blocks))
+        text = " ".join(" ".join(b) for b in blocks if b)
+
+        if text.strip():
+            texts.append(text)
+            valid_indices.append(i)
+            print("NUM TEXTS:", len(texts))
+            print("SAMPLE TEXT:", texts[0][:200] if texts else "EMPTY")
+            print("NON-EMPTY:", sum(1 for t in texts if t.strip()))
 
     # check cache
     need_retrain = True
@@ -687,7 +696,9 @@ def build_dataset(apk_dirs, labels, max_workers=8, use_cache=True, test_size=0.2
         except:
             need_retrain = True
     else:
-        tfidf = TfidfVectorizer(ngram_range=(1, 3), max_features=50000, min_df=2)
+        tfidf = TfidfVectorizer(
+            ngram_range=(1, 3), max_features=50000, min_df=2, stop_words=None
+        )
         X_tfidf = tfidf.fit_transform(texts).toarray()
 
         joblib.dump(tfidf, TFIDF_MODEL)
