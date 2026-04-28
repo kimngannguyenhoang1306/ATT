@@ -468,10 +468,14 @@ def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
         return Word2Vec.load(model_path)
 
     # ===== STREAMING CORPUS =====
-    def sentence_generator():
-        for block in all_blocks:
-            if block:
-                yield [str(op) for op in block]
+    class SentenceIterable:
+        def __init__(self, blocks):
+            self.blocks = blocks
+
+        def __iter__(self):
+            for block in self.blocks:
+                if block:
+                    yield [str(op) for op in block]
 
     # ===== MODEL =====
     model = Word2Vec(
@@ -485,12 +489,14 @@ def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
         epochs=8,
     )
 
+    sentences = SentenceIterable(all_blocks)
+
     print("🧠 Building vocabulary...")
-    model.build_vocab(sentence_generator())
+    model.build_vocab(sentences)
 
     print("🚀 Training Word2Vec...")
     model.train(
-        sentence_generator(),
+        sentences,
         total_examples=model.corpus_count,
         epochs=model.epochs,
         callbacks=[EpochLogger()],
