@@ -340,7 +340,7 @@ def build_blocks_only(smali_dir):
     ]
 
     blocks = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         for res in ex.map(extract_blocks_only, files):
             blocks.extend(res)
     return blocks
