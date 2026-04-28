@@ -23,7 +23,7 @@ from sklearn.ensemble import RandomForestClassifier
 import tensorflow as tf
 
 
-W2V_CACHE_PATH = "w2v_model.model"
+W2V_CACHE_PATH = f"w2v_model.model"
 
 
 def save_w2v_model(model):
@@ -474,7 +474,6 @@ def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
     - subsampling opcode phổ biến
     - optional cache model
     """
-
     # ===== CACHE =====
     if model_path and os.path.exists(model_path):
         print("📦 Loading cached Word2Vec...")
@@ -582,14 +581,14 @@ def hash_dir(path):
     return hashlib.md5(path.encode()).hexdigest()
 
 
-def save_dataset(cache_dir, X, y, feature_names, scaler, apk_dirs):
+def save_dataset(cache_dir, X, y, feature_names, apk_dirs):
     os.makedirs(cache_dir, exist_ok=True)
 
     np.save(os.path.join(cache_dir, "X.npy"), X)
     np.save(os.path.join(cache_dir, "y.npy"), y)
 
     joblib.dump(feature_names, os.path.join(cache_dir, "feature_names.pkl"))
-    joblib.dump(scaler, os.path.join(cache_dir, "scaler.pkl"))
+    # joblib.dump(scaler, os.path.join(cache_dir, "scaler.pkl"))
 
     apk_index = {hash_dir(p): p for p in apk_dirs}
     joblib.dump(apk_index, os.path.join(cache_dir, "apk_index.pkl"))
@@ -608,11 +607,11 @@ def load_dataset(cache_dir):
     y = np.load(y_path)
 
     feature_names = joblib.load(os.path.join(cache_dir, "feature_names.pkl"))
-    scaler = joblib.load(os.path.join(cache_dir, "scaler.pkl"))
+    # scaler = joblib.load(os.path.join(cache_dir, "scaler.pkl"))
     apk_index = joblib.load(os.path.join(cache_dir, "apk_index.pkl"))
 
     print(f"📂 Loaded dataset from {cache_dir}")
-    return X, y, feature_names, scaler, apk_index
+    return X, y, feature_names, apk_index
 
 
 def update_dataset(
@@ -628,16 +627,16 @@ def update_dataset(
 
     if cached is None:
         print("No cache found → building new dataset...")
-        X, y, feature_names, scaler = build_dataset_fn(
+        X, y, feature_names = build_dataset_fn(
             apk_dirs=apk_dirs,
             labels=labels,
             max_workers=max_workers,
             use_cache=use_cache,
         )
-        save_dataset(cache_dir, X, y, feature_names, scaler, apk_dirs)
-        return X, y, feature_names, scaler
+        save_dataset(cache_dir, X, y, feature_names, apk_dirs)
+        return X, y, feature_names
 
-    X_old, y_old, feature_names, scaler, apk_index = cached
+    X_old, y_old, feature_names, apk_index = cached
 
     # APK mới
     new_apks = []
@@ -651,10 +650,10 @@ def update_dataset(
     print(f"🆕 New APKs found: {len(new_apks)}")
 
     if len(new_apks) == 0:
-        return X_old, y_old, feature_names, scaler
+        return X_old, y_old, feature_names
 
     # build dataset cho APK mới
-    X_new, y_new, feature_names, scaler = build_dataset_fn(
+    X_new, y_new, feature_names = build_dataset_fn(
         apk_dirs=new_apks,
         labels=new_labels,
         max_workers=max_workers,
@@ -670,11 +669,11 @@ def update_dataset(
         apk_index[hash_dir(p)] = p
 
     # save lại
-    save_dataset(cache_dir, X, y, feature_names, scaler, list(apk_index.values()))
+    save_dataset(cache_dir, X, y, feature_names, list(apk_index.values()))
 
     print("✅ Dataset updated successfully")
 
-    return X, y, feature_names, scaler
+    return X, y, feature_names
 
 
 def counter_to_vector_with_vocab(counter, vocab, default_size=2000):
@@ -793,15 +792,17 @@ def build_dataset(
             " ".join([" ".join(map(str, b)) for b in all_blocks]).encode()
         ).hexdigest()
 
-    def get_w2v_cache_path(all_blocks, vector_size):
-        h = hashlib.md5(
-            (" ".join([" ".join(map(str, b)) for b in all_blocks])).encode()
-        ).hexdigest()
+    # def get_w2v_cache_path(all_blocks, vector_size):
+    #         h = hashlib.md5(
+    #             (" ".join([" ".join(map(str, b)) for b in all_blocks])).encode()
+    #         ).hexdigest()
 
-        return f"w2v_{vector_size}_{h}.model"
+    #         return f"w2v_{vector_size}_{h}.model"
 
-    corpus_hash = hash_blocks(all_blocks)
-    model_path = model_path = get_w2v_cache_path(all_blocks, vector_size)
+    #     corpus_hash = hash_blocks(all_blocks)
+    #     model_path = model_path = get_w2v_cache_path(all_blocks, vector_size)
+
+    model_path = f"w2v_model.model"
 
     if os.path.exists(model_path):
         w2v_model = Word2Vec.load(model_path)
@@ -1192,7 +1193,7 @@ if __name__ == "__main__":
         exit(1)
 
     # Step 3: Build dataset (use_cache=True để tận dụng pkl cache)
-    X, y, feature_names, scaler = update_dataset(
+    X, y, feature_names = update_dataset(
         cache_dir="dataset_cache",
         apk_dirs=apk_dirs,
         labels=labels,
