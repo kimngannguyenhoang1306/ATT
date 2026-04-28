@@ -1221,13 +1221,22 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
         "DNN": evaluate_model("DNN", y_test, dnn_probs),
     }
 
-    plot_roc(y_test, {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs})
+    plot_roc(
+        y_test,
+        {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs},
+        save_path="figs/roc_comparison.png",
+    )
 
     selected_features = [
         feature_names[i] for i in selected_idx if i < len(feature_names)
     ]
     dnn_importance = get_dnn_importance_scores(dnn)
-    plot_feature_importance(dnn_importance, selected_features, top_n=20)
+    plot_feature_importance(
+        dnn_importance,
+        selected_features,
+        top_n=20,
+        save_path="figs/feature_importance.png",
+    )
 
     return {
         "models": {"svm": svm, "rf": rf, "dnn": dnn},
