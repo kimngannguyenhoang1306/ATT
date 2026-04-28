@@ -867,7 +867,7 @@ def build_dataset(
     def worker(idx, smali_dir):
         return idx, process_apk_cached(smali_dir, w2v_model)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
         for f in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
             idx, result = f.result()
