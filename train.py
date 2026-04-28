@@ -591,7 +591,10 @@ def update_dataset(
     if cached is None:
         print("No cache found → building new dataset...")
         X, y, feature_names, scaler = build_dataset_fn(
-            apk_dirs, labels, max_workers, use_cache
+            apk_dirs=apk_dirs,
+            labels=labels,
+            max_workers=max_workers,
+            use_cache=use_cache,
         )
         save_dataset(cache_dir, X, y, feature_names, scaler, apk_dirs)
         return X, y, feature_names, scaler
