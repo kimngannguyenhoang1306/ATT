@@ -439,13 +439,66 @@ def graph_to_features(G):
 # =========================
 # 5. EMBEDDING
 # =========================
-def train_opcode_embedding(all_blocks, vector_size=32):
-    """Train Word2Vec trên tất cả blocks."""
-    sentences = [[str(op) for op in block] for block in all_blocks if block]
+from gensim.models import Word2Vec
+from gensim.models.callbacks import CallbackAny2Vec
+import os
 
+
+class EpochLogger(CallbackAny2Vec):
+    def __init__(self):
+        self.epoch = 0
+
+    def on_epoch_end(self, model):
+        self.epoch += 1
+        print(f"🧠 Word2Vec epoch {self.epoch} done")
+
+
+def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
+    """
+    Optimized Word2Vec:
+    - streaming corpus (không build list sentences)
+    - skip-gram + negative sampling tuned
+    - subsampling opcode phổ biến
+    - optional cache model
+    """
+
+    # ===== CACHE =====
+    if model_path and os.path.exists(model_path):
+        print("📦 Loading cached Word2Vec...")
+        return Word2Vec.load(model_path)
+
+    # ===== STREAMING CORPUS =====
+    def sentence_generator():
+        for block in all_blocks:
+            if block:
+                yield [str(op) for op in block]
+
+    # ===== MODEL =====
     model = Word2Vec(
-        sentences=sentences, vector_size=32, window=5, min_count=1, sg=1, workers=8
+        vector_size=vector_size,
+        window=5,
+        min_count=2,
+        sg=1,  # skip-gram (giữ semantic opcode tốt hơn CBOW)
+        negative=15,  # tăng stability embedding malware patterns
+        sample=1e-4,  # subsampling opcode phổ biến (move, const,...)
+        workers=os.cpu_count(),
+        epochs=8,
     )
+
+    print("🧠 Building vocabulary...")
+    model.build_vocab(sentence_generator())
+
+    print("🚀 Training Word2Vec...")
+    model.train(
+        sentence_generator(),
+        total_examples=model.corpus_count,
+        epochs=model.epochs,
+        callbacks=[EpochLogger()],
+    )
+
+    if model_path:
+        model.save(model_path)
+        print(f"💾 Saved Word2Vec to {model_path}")
 
     return model
 
@@ -466,24 +519,16 @@ def encode_block(block, w2v_model, vector_size=32):
     return np.mean(vectors, axis=0)
 
 
-def graph_embedding(G, w2v_model, vector_size=32):
+def graph_embedding(G, op_cache, vector_size=32):
     if G.number_of_nodes() == 0:
         return np.zeros(vector_size)
 
-    all_ops = []
+    vecs = []
 
     for _, data in G.nodes(data=True):
-        all_ops.extend(data.get("features", []))
-
-    if not all_ops:
-        return np.zeros(vector_size)
-
-    vecs = []
-    wv = w2v_model.wv
-
-    for op in all_ops:
-        if op in wv:
-            vecs.append(wv[op])
+        for op in data.get("features", []):
+            if op in op_cache:
+                vecs.append(op_cache[op])
 
     if not vecs:
         return np.zeros(vector_size)
@@ -645,7 +690,7 @@ def process_apk_cached(smali_dir, w2v_model):
                 "api": cached["api"],
                 "cfg": cached["cfg"],
                 "blocks": blocks,
-                "emb": graph_embedding(G, w2v_model),
+                "emb": cached["emb"],
             }
 
     except Exception:
@@ -665,6 +710,7 @@ def process_apk_cached(smali_dir, w2v_model):
                     "api": result["api"],
                     "cfg": result["cfg"],
                     "blocks": blocks,
+                    "emb": result["emb"],
                 },
                 f,
             )
@@ -704,15 +750,27 @@ def build_dataset(
             " ".join([" ".join(map(str, b)) for b in all_blocks]).encode()
         ).hexdigest()
 
+    def get_w2v_cache_path(all_blocks, vector_size):
+        h = hashlib.md5(
+            (
+                str(vector_size)
+                + " ".join([" ".join(map(str, b)) for b in all_blocks[:5000]])
+            ).encode()
+        ).hexdigest()
+
+        return f"w2v_{h}.model"
+
     corpus_hash = hash_blocks(all_blocks)
-    model_path = f"w2v_{corpus_hash}.model"
+    model_path = model_path = get_w2v_cache_path(all_blocks, vector_size)
 
     if os.path.exists(model_path):
         w2v_model = Word2Vec.load(model_path)
         print("📦 Loaded cached Word2Vec")
     else:
         print("🧠 Training Word2Vec...")
-        w2v_model = train_opcode_embedding(all_blocks, vector_size)
+        w2v_model = train_opcode_embedding(
+            all_blocks, vector_size, model_path=model_path
+        )
         w2v_model.save(model_path)
 
     print("\n🔧 Step 3: Extracting features from all APKs...")
