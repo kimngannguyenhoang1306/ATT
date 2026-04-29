@@ -847,6 +847,10 @@ OP_SWAP_MAP = {
 def inject_junk_blocks(methods: list[dict], prob: float = 0.15) -> list[dict]:
     augmented = []
     for method in methods:
+        if len(method["blocks"]) < 3:
+            augmented.append(method)
+            continue
+
         new_blocks = list(method["blocks"])
         if random.random() < prob:
             junk_ops = random.choice(JUNK_OPS)
@@ -867,6 +871,10 @@ def swap_opcodes(methods: list[dict], prob: float = 0.1) -> list[dict]:
     """Swap semantically equivalent opcodes to simulate obfuscation."""
     augmented = []
     for method in methods:
+        if len(method["blocks"]) < 3:
+            augmented.append(method)
+            continue
+
         new_blocks = []
         for block in method["blocks"]:
             new_block = []
@@ -911,9 +919,9 @@ def shuffle_independent_blocks(methods: list[dict], prob: float = 0.1) -> list[d
 
 def obfuscate_methods(methods: list[dict]) -> list[dict]:
     """Apply all 3 augmentation strategies."""
-    methods = inject_junk_blocks(methods, prob=0.15)
-    methods = swap_opcodes(methods, prob=0.1)
-    methods = shuffle_independent_blocks(methods, prob=0.1)
+    methods = inject_junk_blocks(methods, prob=0.1)
+    methods = swap_opcodes(methods, prob=0.05)
+    # methods = shuffle_independent_blocks(methods, prob=0.1)
     return methods
 
 
@@ -1121,9 +1129,15 @@ def build_dataset(
     aug_cache_paths: list[str] = []
     aug_labels_list: list[int] = []
 
+    AUG_RATIO = 0.3
+
     for cp, lbl in zip(train_cache_paths, train_labels_list):
         if lbl != 1:
             continue
+
+        if random.random() > AUG_RATIO:
+            continue
+
         smali_dir = cp_to_dir.get(cp)
         if smali_dir is None:
             continue
