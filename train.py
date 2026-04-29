@@ -934,7 +934,7 @@ def build_dataset(
     all_api = [r["api"] for r in combined_results]
     all_cfg = [r["cfg"] for r in combined_results]
 
-    mos_vocab = build_global_vocab(all_mos, min_freq=3, max_features=1000)
+    mos_vocab = build_global_vocab(all_mos, min_freq=3, max_features=1500)
     api_vocab = build_global_vocab(all_api, min_freq=3, max_features=500)
     cfg_vocab = build_global_vocab(all_cfg, min_freq=2, max_features=200)
 
