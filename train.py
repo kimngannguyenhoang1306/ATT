@@ -228,9 +228,9 @@ def normalize_line(line: str) -> str:
 
 
 def extract_blocks_only(file_path):
-    blocks, current = [], []
+    blocks = []
+    current = []
     in_method = False
-    label_map = {}
 
     try:
         for line in open(file_path, encoding="utf-8", errors="ignore"):
@@ -239,11 +239,13 @@ def extract_blocks_only(file_path):
             if not line:
                 continue
 
+            # Start method
             if line.startswith(".method"):
                 in_method = True
                 current = []
                 continue
 
+            # End method
             if line.startswith(".end method"):
                 if current:
                     blocks.append(current)
@@ -254,18 +256,36 @@ def extract_blocks_only(file_path):
             if not in_method:
                 continue
 
+            # ✅ FIX 1: lưu label như node marker
             if line.startswith(":"):
-                label_map[line] = len(blocks)
+                current.append(("LABEL", line))  # 🔥 IMPORTANT
+                continue
 
             parts = line.split()
             if not parts:
                 continue
 
             token = parts[0]
+            api_name = None
+            target_label = None
 
+            # 🔥 extract API name
+            if token.startswith("invoke") and len(parts) > 1:
+                full = " ".join(parts)
+                match = re.search(r"L([^;]+);", full)
+                if match:
+                    api_name = match.group(1).split("/")[-1]
+
+            # 🔥 extract jump target
+            if (token.startswith("if") or token.startswith("goto")) and len(parts) > 1:
+                if parts[-1].startswith(":"):
+                    target_label = parts[-1]
+
+            # opcode hợp lệ
             if token in CATEGORY:
-                current.append(CATEGORY[token])
+                current.append((CATEGORY[token], token, api_name, target_label))
 
+            # block split
             if token in TERMINATORS or token in BRANCH_OPS:
                 if current:
                     blocks.append(current)
@@ -280,25 +300,44 @@ def extract_blocks_only(file_path):
     return blocks
 
 
-# FIX 1: build_cfg_from_blocks - tránh tạo edge tới node không tồn tại
 def build_cfg_from_blocks(blocks):
     G = nx.DiGraph()
     n = len(blocks)
 
+    # 🔥 STEP 1: build label_map
+    label_map = {}
+
+    for i, block in enumerate(blocks):
+        for item in block:
+            if isinstance(item, tuple) and item[0] == "LABEL":
+                label_map[item[1]] = i
+
+    # 🔥 STEP 2: build graph
     for i, block in enumerate(blocks):
         G.add_node(i, features=block)
 
-        last_op = block[-1] if block else None
+        if not block:
+            continue
 
-        if last_op in BRANCH_OPS:
-            # FIX: chỉ thêm fall-through edge nếu node tiếp theo tồn tại
-            if i + 1 < n:
-                G.add_edge(i, i + 1)
-            # TODO: thêm jump-target edge khi có label resolution
-        elif last_op not in TERMINATORS:
-            # fall-through block: chỉ nối nếu node tiếp theo tồn tại
-            if i + 1 < n:
-                G.add_edge(i, i + 1)
+        last = block[-1]
+
+        if not isinstance(last, tuple):
+            continue
+
+        # unpack safely
+        if len(last) == 4:
+            cat, op, api_name, target_label = last
+        else:
+            cat, op = last[0], last[1]
+            target_label = None
+
+        # ✅ fall-through edge
+        if op not in ["return", "return-void"] and i + 1 < n:
+            G.add_edge(i, i + 1)
+
+        # 🔥 FIX 2: jump edge REAL CFG
+        if target_label and target_label in label_map:
+            G.add_edge(i, label_map[target_label])
 
     return G
 
@@ -349,7 +388,7 @@ def build_cfg_from_file(file_path):
         token = parts[0]
 
         if token in CATEGORY:
-            current.append(CATEGORY[token])
+            current.append((CATEGORY[token], token, api_name))
 
         if token in TERMINATORS or token in BRANCH_OPS:
             if current:
@@ -487,22 +526,68 @@ def build_mos_from_blocks(blocks):
 
 def extract_api_sequence(blocks):
     api_seq = Counter()
+
     for block in blocks:
-        for op in block:
-            if op == "V":
-                api_seq["API_CALL"] += 1
+        for item in block:
+            if not isinstance(item, tuple):
+                continue
+
+            if len(item) == 3:
+                cat, op, api_name = item
+            else:
+                cat, op = item
+                api_name = None
+
+            if op.startswith("invoke"):
+                # 1. loại invoke
+                if "virtual" in op:
+                    api_seq["API_VIRTUAL"] += 1
+                elif "static" in op:
+                    api_seq["API_STATIC"] += 1
+                elif "direct" in op:
+                    api_seq["API_DIRECT"] += 1
+                else:
+                    api_seq["API_OTHER"] += 1
+
+                # 2. 🔥 FEATURE QUAN TRỌNG: tên API
+                if api_name:
+                    api_seq[f"API_{api_name}"] += 1
+
     return api_seq
 
 
 def graph_to_features_fast(blocks):
     features = Counter()
 
-    for block in blocks:
-        if block:
-            features[tuple(block)] += 1
+    num_blocks = len(blocks)
+    features[("NODE_COUNT",)] = num_blocks
+    features[("EDGE_COUNT",)] = max(0, num_blocks - 1)
 
-    features[("EDGE_COUNT",)] = len(blocks) - 1
-    features[("NODE_COUNT",)] = len(blocks)
+    # AVG BLOCK SIZE
+    avg_size = sum(len(b) for b in blocks) / num_blocks if num_blocks > 0 else 0
+    features[("AVG_BLOCK_SIZE",)] = avg_size
+
+    branch_count = 0
+    loop_count = 0
+
+    for i, block in enumerate(blocks):
+        for item in block:
+            if isinstance(item, tuple):
+                cat = item[0]
+            else:
+                continue
+
+            if cat == "I":
+                branch_count += 1
+
+        # 🔥 loop approx: backward jump
+        if i > 0:
+            # nếu block nhỏ → coi như loop (heuristic đơn giản)
+            if len(block) < 3:
+                loop_count += 1
+
+    features[("BRANCH_COUNT",)] = branch_count
+    features[("LOOP_COUNT",)] = loop_count
 
     return features
 
@@ -904,8 +989,8 @@ def build_dataset(
     all_api = [r["api"] for r in combined_results]
     all_cfg = [r["cfg"] for r in combined_results]
 
-    mos_vocab = build_global_vocab(all_mos, min_freq=2, max_features=1500)
-    api_vocab = build_global_vocab(all_api, min_freq=1, max_features=200)
+    mos_vocab = build_global_vocab(all_mos, min_freq=1, max_features=3000)
+    api_vocab = build_global_vocab(all_api, min_freq=1, max_features=2000)
     cfg_vocab = build_global_vocab(all_cfg, min_freq=1, max_features=300)
 
     print(
