@@ -830,7 +830,7 @@ def process_apk_cached(smali_dir, w2v_model):
             return {
                 "mos": cached["mos"],
                 "api": cached["api"],
-                "cfg": graph_to_features(G, blocks),  # 🔥 FIX
+                "cfg": graph_to_features_fast(G, blocks),  # 🔥 FIX
                 "blocks": blocks,
                 "emb": cached["emb"],
             }
@@ -899,13 +899,24 @@ def build_dataset(
     def worker(idx, smali_dir):
         data = process_apk_cached(smali_dir, w2v_model)
 
-        blocks_aug = obfuscate_blocks(data["blocks"])
-        G_aug = build_cfg_from_blocks(blocks_aug)
+        label = labels[idx]
+
+        # ✅ CHỈ augment malware
+        if label == 1:
+            blocks_aug = obfuscate_blocks(data["blocks"])
+        else:
+            blocks_aug = data["blocks"]
+
+        # ✅ CFG: luôn build từ blocks gốc (KHÔNG dùng augmented)
+        G = build_cfg_from_blocks(data["blocks"])
 
         mos = build_mos_from_blocks(blocks_aug)
         api = extract_api_sequence(blocks_aug)
-        cfg = graph_to_features_fast(G_aug, blocks_aug)
-        emb = graph_embedding(blocks_aug, G_aug, w2v_model)
+
+        # ✅ CFG giữ nguyên (semantic feature)
+        cfg = data["cfg"]
+
+        emb = graph_embedding(data["blocks"], G, w2v_model)
 
         data_aug = {
             "mos": mos,
@@ -925,8 +936,16 @@ def build_dataset(
             aug_results[idx] = data_aug
 
     # FIX 2: labels augment phải tương ứng đúng thứ tự với results + aug_results
-    combined_results = results + aug_results
-    combined_labels = list(labels) + list(labels)
+    combined_results = []
+    combined_labels = []
+
+    for i in range(len(results)):
+        combined_results.append(results[i])
+        combined_labels.append(labels[i])
+
+        if labels[i] == 1:  # chỉ malware mới augment
+            combined_results.append(aug_results[i])
+            combined_labels.append(labels[i])
 
     print("\n📚 Step 4: Building global vocabulary...")
 
