@@ -286,7 +286,9 @@ def extract_blocks_only(file_path):
                 current.append((CATEGORY[token], token, api_name, target_label))
 
             # block split
-            if token in TERMINATORS or token in BRANCH_OPS:
+            cat = CATEGORY.get(token)
+
+            if cat in TERMINATORS or cat in BRANCH_OPS:
                 if current:
                     blocks.append(current)
                 current = []
