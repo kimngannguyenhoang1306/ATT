@@ -70,9 +70,9 @@ import tensorflow as tf
 MAX_BLOCKS_PER_APK = 15_000  # ↑ from 10k — more coverage
 TERMINATORS = {"R"}
 BRANCH_OPS = {"I"}
-W2V_MODEL_PATH = "w2v_model_v3.model"
-CACHE_ROOT = "feature_cache_v3"
-SHARD_ROOT = "matrix_shards_v3"
+W2V_MODEL_PATH = "w2v_model.model"
+CACHE_ROOT = "feature_cache"
+SHARD_ROOT = "matrix_shards"
 VECTOR_SIZE = 64  # ↑ from 32
 MAX_WORKERS = 4
 
@@ -1127,7 +1127,7 @@ def build_dataset(
         smali_dir = cp_to_dir.get(cp)
         if smali_dir is None:
             continue
-        aug_key = hashlib.md5((smali_dir + "_aug_v3").encode()).hexdigest()
+        aug_key = hashlib.md5((smali_dir + "_aug").encode()).hexdigest()
         aug_path = os.path.join(aug_cache_dir, f"aug_{aug_key}.pkl")
         if not os.path.exists(aug_path):
             aug = extract_features_augmented(
