@@ -1,5 +1,5 @@
 # =========================
-# MOSDroid FINAL (CFG + FULL OPCODE COVERAGE) - FIXED
+# MOSDroid FINAL (CFG + FULL OPCODE COVERAGE) - FIXED (NO DATA LEAKAGE)
 # =========================
 
 import os
@@ -239,13 +239,11 @@ def extract_blocks_only(file_path):
             if not line:
                 continue
 
-            # Start method
             if line.startswith(".method"):
                 in_method = True
                 current = []
                 continue
 
-            # End method
             if line.startswith(".end method"):
                 if current:
                     blocks.append(current)
@@ -256,9 +254,8 @@ def extract_blocks_only(file_path):
             if not in_method:
                 continue
 
-            # ✅ FIX 1: lưu label như node marker
             if line.startswith(":"):
-                current.append(("LABEL", line))  # 🔥 IMPORTANT
+                current.append(("LABEL", line))
                 continue
 
             parts = line.split()
@@ -269,26 +266,21 @@ def extract_blocks_only(file_path):
             api_name = None
             target_label = None
 
-            # 🔥 extract API name
             if token.startswith("invoke") and len(parts) > 1:
                 full = " ".join(parts)
                 match = re.search(r"L([^;]+);", full)
                 if match:
                     api_name = match.group(1).split("/")[-1]
 
-            # 🔥 extract jump target
             if (token.startswith("if") or token.startswith("goto")) and len(parts) > 1:
                 if parts[-1].startswith(":"):
                     target_label = parts[-1]
 
-            # opcode hợp lệ
             if token in CATEGORY:
                 current.append((CATEGORY[token], token, api_name, target_label))
 
-            # block split
             cat = CATEGORY.get(token, "X")
 
-            # split logic
             if cat in TERMINATORS or cat in BRANCH_OPS:
                 if current:
                     blocks.append(current)
@@ -307,7 +299,6 @@ def build_cfg_from_blocks(blocks):
     G = nx.DiGraph()
     n = len(blocks)
 
-    # 🔥 STEP 1: build label_map
     label_map = {}
 
     for i, block in enumerate(blocks):
@@ -315,7 +306,6 @@ def build_cfg_from_blocks(blocks):
             if isinstance(item, tuple) and item[0] == "LABEL":
                 label_map[item[1]] = i
 
-    # 🔥 STEP 2: build graph
     for i, block in enumerate(blocks):
         G.add_node(i, features=block)
 
@@ -327,18 +317,15 @@ def build_cfg_from_blocks(blocks):
         if not isinstance(last, tuple):
             continue
 
-        # unpack safely
         if len(last) == 4:
             cat, op, api_name, target_label = last
         else:
             cat, op = last[0], last[1]
             target_label = None
 
-        # ✅ fall-through edge
         if not op.startswith("return") and i + 1 < n:
             G.add_edge(i, i + 1)
 
-        # 🔥 FIX 2: jump edge REAL CFG
         if target_label and target_label in label_map:
             G.add_edge(i, label_map[target_label])
 
@@ -412,7 +399,6 @@ def build_cfg_from_dir_fast(smali_dir, max_workers=8):
 
 
 def build_cfg_from_dir(smali_dir):
-    """Build CFG từ toàn bộ thư mục smali."""
     all_blocks = []
     combined_graph = nx.DiGraph()
     node_offset = 0
@@ -476,7 +462,6 @@ def extract_api_sequence(blocks):
                 continue
 
             if op.startswith("invoke"):
-                # 1. loại invoke
                 if "virtual" in op:
                     api_seq["API_VIRTUAL"] += 1
                 elif "static" in op:
@@ -486,7 +471,6 @@ def extract_api_sequence(blocks):
                 else:
                     api_seq["API_OTHER"] += 1
 
-                # 2. 🔥 FEATURE QUAN TRỌNG: tên API
                 if api_name:
                     api_seq[f"API_{api_name}"] += 1
 
@@ -499,24 +483,20 @@ def graph_to_features_fast(G, blocks):
     features[("NODE_COUNT",)] = G.number_of_nodes()
     features[("EDGE_COUNT",)] = G.number_of_edges()
 
-    # Degree stats
     degrees = [d for _, d in G.degree()]
     if degrees:
         features[("AVG_DEGREE",)] = np.mean(degrees)
         features[("MAX_DEGREE",)] = np.max(degrees)
 
-    # Branch nodes (out_degree > 1)
     branch_nodes = sum(1 for n in G.nodes() if G.out_degree(n) > 1)
     features[("BRANCH_NODES",)] = branch_nodes
 
-    # Loop detection (cycle)
     try:
         cycles = list(nx.simple_cycles(G))
         features[("CYCLE_COUNT",)] = len(cycles)
     except:
         features[("CYCLE_COUNT",)] = 0
 
-    # Density
     if G.number_of_nodes() > 1:
         features[("DENSITY",)] = nx.density(G)
 
@@ -539,6 +519,10 @@ class EpochLogger(CallbackAny2Vec):
 
 
 def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
+    """
+    Train Word2Vec chỉ trên tập train blocks.
+    Không bao giờ gọi hàm này với toàn bộ dataset.
+    """
     if model_path and os.path.exists(model_path):
         print("📦 Loading cached Word2Vec...")
         return Word2Vec.load(model_path)
@@ -617,11 +601,6 @@ def graph_embedding(blocks, G, w2v_model, vector_size=32):
 
         if block_vecs:
             node_vec = np.mean(block_vecs, axis=0)
-
-            # 🔥 thêm structural signal: degree
-            degree = G.degree(node)
-            node_vec = node_vec * (1 + degree * 0.1)
-
             node_vecs.append(node_vec)
 
     if not node_vecs:
@@ -766,8 +745,6 @@ def inject_junk_blocks(blocks, prob=0.3):
             for op_line in junk:
                 op = op_line.split()[0]
                 cat = CATEGORY.get(op, "X")
-
-                # ✅ FIX: giữ đúng format tuple như block gốc
                 junk_encoded.append((cat, op, None))
 
             new_blocks.append(junk_encoded)
@@ -792,8 +769,6 @@ def duplicate_blocks(blocks, prob=0.2):
 
 def obfuscate_blocks(blocks):
     blocks = inject_junk_blocks(blocks, prob=0.1)
-    # blocks = duplicate_blocks(blocks, prob=0.2)
-    # blocks = shuffle_blocks(blocks, prob=0.1)
     return blocks
 
 
@@ -833,7 +808,7 @@ def process_apk_cached(smali_dir, w2v_model):
             return {
                 "mos": cached["mos"],
                 "api": cached["api"],
-                "cfg": graph_to_features_fast(G, blocks),  # 🔥 FIX
+                "cfg": graph_to_features_fast(G, blocks),
                 "blocks": blocks,
                 "emb": cached["emb"],
             }
@@ -875,6 +850,11 @@ class SentenceIterable:
 def build_dataset(
     apk_dirs, labels, max_workers=8, vector_size=32, use_cache=True, test_size=0.2
 ):
+    # =========================================================
+    # FIX DATA LEAKAGE: split index TRƯỚC, rồi mới fit bất cứ
+    # transformer nào (W2V, vocab, scaler, freq_mask)
+    # =========================================================
+
     apk_blocks = {}
 
     print("\n📊 Step 1: Collecting blocks (ONE PASS ONLY)...")
@@ -889,15 +869,37 @@ def build_dataset(
     total_blocks = sum(len(b) for b in apk_blocks.values())
     print(f"Total blocks collected: {total_blocks}")
 
-    print("\n🧠 Step 2: Training Word2Vec embedding...")
+    # ----------------------------------------------------------
+    # FIX LEAKAGE #1: Split index TRƯỚC khi train W2V
+    # ----------------------------------------------------------
+    print("\n✂️  Step 2: Train/test split indices (before any fitting)...")
+
+    train_idx, test_idx = train_test_split(
+        list(range(len(apk_dirs))),
+        test_size=test_size,
+        stratify=labels,
+        random_state=42,
+    )
+    train_dirs = [apk_dirs[i] for i in train_idx]
+    train_labels = [labels[i] for i in train_idx]
+    test_dirs = [apk_dirs[i] for i in test_idx]
+    test_labels = [labels[i] for i in test_idx]
+
+    print(f"Train: {len(train_dirs)} | Test: {len(test_dirs)}")
+
+    # ----------------------------------------------------------
+    # FIX LEAKAGE #1: Word2Vec chỉ train trên train_dirs
+    # ----------------------------------------------------------
+    print("\n🧠 Step 3: Training Word2Vec (TRAIN SET ONLY)...")
     model_path = "w2v_model.model"
 
     if os.path.exists(model_path):
         w2v_model = Word2Vec.load(model_path)
         print("📦 Loaded cached Word2Vec")
     else:
-        print("🧠 Training Word2Vec...")
-        sentences = SentenceIterable(apk_blocks)
+        print("🧠 Training Word2Vec on TRAIN set only...")
+        train_apk_blocks = {d: apk_blocks[d] for d in train_dirs}
+        sentences = SentenceIterable(train_apk_blocks)
 
         model = Word2Vec(
             vector_size=vector_size,
@@ -923,94 +925,121 @@ def build_dataset(
         w2v_model = model
         w2v_model.save(model_path)
 
-    print("\n🔧 Step 3: Extracting features from all APKs...")
+    # ----------------------------------------------------------
+    # Extract raw features (không cần vocab ở bước này)
+    # ----------------------------------------------------------
+    print("\n🔧 Step 4: Extracting raw features from all APKs...")
 
-    # FIX 2: Dùng list có thứ tự thay vì append từ as_completed (không đảm bảo thứ tự)
-    # Khởi tạo mảng kết quả theo đúng index
-    results = [None] * len(apk_dirs)
-    aug_results = [None] * len(apk_dirs)
+    all_indices = list(range(len(apk_dirs)))
+    raw_results = [None] * len(apk_dirs)
 
-    def worker(idx, smali_dir):
-        data = process_apk_cached(smali_dir, w2v_model)
-
-        label = labels[idx]
-        blocks = get_blocks_cached(smali_dir)
-
-        # ✅ CHỈ augment malware
-        if label == 1:
-            blocks_aug = obfuscate_blocks(blocks)
-        else:
-            blocks_aug = blocks
-
-        # ✅ CFG: luôn build từ blocks gốc (KHÔNG dùng augmented)
+    def worker(idx):
+        smali_dir = apk_dirs[idx]
+        blocks = apk_blocks[smali_dir]
         G = build_cfg_from_blocks(blocks)
+
+        mos = build_mos_from_blocks(blocks)
+        api = extract_api_sequence(blocks)
+        cfg_feat = graph_to_features_fast(G, blocks)
+        emb = graph_embedding(blocks, G, w2v_model)
+
+        return idx, {"mos": mos, "api": api, "cfg": cfg_feat, "emb": emb}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(worker, i) for i in all_indices]
+        for f in tqdm(
+            as_completed(futures), total=len(futures), desc="Extracting features"
+        ):
+            idx, data = f.result()
+            raw_results[idx] = data
+
+    # ----------------------------------------------------------
+    # Augment malware CHỈNH trên train set (không đụng test)
+    # ----------------------------------------------------------
+    print("\n🔀 Step 5: Augmenting train set (malware only)...")
+
+    def worker_aug(idx):
+        smali_dir = apk_dirs[idx]
+        blocks = apk_blocks[smali_dir]
+        blocks_aug = obfuscate_blocks(blocks)
+        G_aug = build_cfg_from_blocks(blocks_aug)
 
         mos = build_mos_from_blocks(blocks_aug)
         api = extract_api_sequence(blocks_aug)
+        cfg_feat = raw_results[idx]["cfg"]  # giữ CFG gốc
+        emb = graph_embedding(blocks, G_aug, w2v_model)
 
-        # ✅ CFG giữ nguyên (semantic feature)
-        cfg = data["cfg"]
+        return idx, {"mos": mos, "api": api, "cfg": cfg_feat, "emb": emb}
 
-        emb = graph_embedding(blocks, G, w2v_model)
-
-        data_aug = {
-            "mos": mos,
-            "api": api,
-            "cfg": cfg,
-            "emb": emb,
-        }
-
-        return idx, data, data_aug
+    # Chỉ augment train malware
+    train_malware_idx = [i for i in train_idx if labels[i] == 1]
+    aug_results = {}
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(worker, i, d) for i, d in enumerate(apk_dirs)]
-        for f in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
-            idx, data, data_aug = f.result()
-            # FIX 2: ghi vào đúng vị trí index, không append lộn xộn
-            results[idx] = data
-            aug_results[idx] = data_aug
+        futures = [executor.submit(worker_aug, i) for i in train_malware_idx]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Augmenting"):
+            idx, data = f.result()
+            aug_results[idx] = data
 
-    # FIX 2: labels augment phải tương ứng đúng thứ tự với results + aug_results
-    combined_results = []
-    combined_labels = []
+    # Tạo danh sách train: gốc + augmented malware
+    train_results = []
+    train_combined_labels = []
 
-    for i in range(len(results)):
-        combined_results.append(results[i])
-        combined_labels.append(labels[i])
+    for i in train_idx:
+        train_results.append(raw_results[i])
+        train_combined_labels.append(labels[i])
+        if labels[i] == 1 and i in aug_results:
+            train_results.append(aug_results[i])
+            train_combined_labels.append(labels[i])
 
-        if labels[i] == 1:  # chỉ malware mới augment
-            combined_results.append(aug_results[i])
-            combined_labels.append(labels[i])
+    test_results = [raw_results[i] for i in test_idx]
+    test_combined_labels = [labels[i] for i in test_idx]
 
-    print("\n📚 Step 4: Building global vocabulary...")
+    # ----------------------------------------------------------
+    # FIX LEAKAGE #2: Build vocab CHỈNH trên train_results
+    # ----------------------------------------------------------
+    print("\n📚 Step 6: Building global vocabulary (TRAIN SET ONLY)...")
 
-    all_mos = [r["mos"] for r in combined_results]
-    all_api = [r["api"] for r in combined_results]
-    all_cfg = [r["cfg"] for r in combined_results]
+    train_mos = [r["mos"] for r in train_results]
+    train_api = [r["api"] for r in train_results]
+    train_cfg = [r["cfg"] for r in train_results]
 
-    mos_vocab = build_global_vocab(all_mos, min_freq=3, max_features=1500)
-    api_vocab = build_global_vocab(all_api, min_freq=3, max_features=500)
-    cfg_vocab = build_global_vocab(all_cfg, min_freq=2, max_features=200)
+    mos_vocab = build_global_vocab(train_mos, min_freq=3, max_features=1500)
+    api_vocab = build_global_vocab(train_api, min_freq=3, max_features=500)
+    cfg_vocab = build_global_vocab(train_cfg, min_freq=2, max_features=200)
 
     print(
         f"Vocab sizes - MOS: {len(mos_vocab)}, API: {len(api_vocab)}, CFG: {len(cfg_vocab)}"
     )
 
-    print("\n🔢 Step 5: Building feature vectors...")
+    # ----------------------------------------------------------
+    # Vectorize
+    # ----------------------------------------------------------
+    print("\n🔢 Step 7: Building feature vectors...")
 
-    X = []
-    for r in combined_results:
-        mos_vec = counter_to_vector_with_vocab(r["mos"], mos_vocab)
-        api_vec = counter_to_vector_with_vocab(r["api"], api_vocab)
-        cfg_vec = counter_to_vector_with_vocab(r["cfg"], cfg_vocab)
-        emb_vec = r["emb"]
+    def vectorize(results):
+        X = []
+        for r in results:
+            mos_vec = counter_to_vector_with_vocab(r["mos"], mos_vocab)
+            api_vec = counter_to_vector_with_vocab(r["api"], api_vocab)
+            cfg_vec = counter_to_vector_with_vocab(r["cfg"], cfg_vocab)
+            emb_vec = r["emb"]
+            combined = np.concatenate([mos_vec, api_vec, cfg_vec, emb_vec])
+            X.append(combined)
+        return np.array(X)
 
-        combined = np.concatenate([mos_vec, api_vec, cfg_vec, emb_vec])
-        X.append(combined)
+    X_train_raw = vectorize(train_results)
+    X_test_raw = vectorize(test_results)
+    y_train = np.array(train_combined_labels)
+    y_test = np.array(test_combined_labels)
 
+    # ----------------------------------------------------------
+    # FIX LEAKAGE #3: StandardScaler fit CHỈNH trên train
+    # ----------------------------------------------------------
+    print("\n📐 Step 8: Scaling (fit on TRAIN SET ONLY)...")
     scaler = StandardScaler()
-    X = scaler.fit_transform(np.array(X))
-    y = np.array(combined_labels)
+    X_train = scaler.fit_transform(X_train_raw)
+    X_test = scaler.transform(X_test_raw)  # chỉ transform, không fit
 
     def format_feature_name(f):
         if isinstance(f, tuple):
@@ -1026,7 +1055,6 @@ def build_dataset(
                 else:
                     parts.append(str(item))
             return " → ".join(parts)
-
         return str(f)
 
     feature_names = (
@@ -1036,9 +1064,12 @@ def build_dataset(
         + [f"EMB:{i}" for i in range(vector_size)]
     )
 
-    print(f"\n✅ Dataset built: X={X.shape}, y={y.shape}")
+    print(f"\n✅ Dataset built:")
+    print(f"  X_train={X_train.shape}, y_train={y_train.shape}")
+    print(f"  X_test={X_test.shape},  y_test={y_test.shape}")
 
-    return X, y, feature_names, scaler
+    # Trả về cả train và test đã tách sẵn, scaler fit-only-train
+    return X_train, X_test, y_train, y_test, feature_names, scaler
 
 
 # =========================
@@ -1069,10 +1100,6 @@ def build_dnn(input_dim):
 
 
 def get_dnn_importance_scores(model):
-    """
-    Lấy importance từ layer Dense đầu tiên có weight 2D.
-    FIX 4: tìm đúng Dense layer (bỏ qua BatchNormalization ở đầu)
-    """
     for layer in model.layers:
         if isinstance(layer, tf.keras.layers.Dense):
             weights = layer.get_weights()
@@ -1082,17 +1109,14 @@ def get_dnn_importance_scores(model):
 
 
 def select_top_k_features(X_train, X_test, importance, k=3000):
-    """Select top k features based on importance scores."""
     n_features = X_train.shape[1]
 
     if importance is None:
         importance = np.ones(n_features)
     else:
-        # FIX 4: align importance length với số feature thực tế
         if len(importance) > n_features:
             importance = importance[:n_features]
         elif len(importance) < n_features:
-            # pad với zeros nếu thiếu
             importance = np.concatenate(
                 [importance, np.zeros(n_features - len(importance))]
             )
@@ -1103,21 +1127,21 @@ def select_top_k_features(X_train, X_test, importance, k=3000):
     return X_train[:, idx], X_test[:, idx], idx
 
 
-def filter_infrequent_features(X, threshold=0.01):
-    app_counts = np.sum(X > 0, axis=0)
-    min_apps = max(1, int(X.shape[0] * threshold))
+def filter_infrequent_features(X_train, X_test, threshold=0.002):
+    """
+    FIX LEAKAGE #4: tính frequency mask CHỈ trên X_train,
+    sau đó apply cùng mask lên X_test.
+    """
+    app_counts = np.sum(X_train > 0, axis=0)
+    min_apps = max(1, int(X_train.shape[0] * threshold))
     mask = app_counts >= min_apps
     print(
-        f"  filter_infrequent_features: giữ {mask.sum()}/{X.shape[1]} features (threshold={threshold})"
+        f"  filter_infrequent_features: giữ {mask.sum()}/{X_train.shape[1]} features (threshold={threshold})"
     )
-    return X[:, mask], mask
+    return X_train[:, mask], X_test[:, mask], mask
 
 
 def auto_select_k(X_train, y_train, candidate_k=None):
-    """
-    Thử các giá trị k khác nhau, dùng RF để ước lượng nhanh AUC trên val set.
-    FIX 5: tách val set trước khi fit importance để tránh data leak.
-    """
     if candidate_k is None:
         candidate_k = [500, 1000, 2000, 3000]
 
@@ -1127,17 +1151,14 @@ def auto_select_k(X_train, y_train, candidate_k=None):
 
     print(f"\n🔍 auto_select_k: thử {candidate_k}...")
 
-    # FIX 5: split trước để importance không thấy val data
     X_tr, X_val, y_tr, y_val = train_test_split(
         X_train, y_train, test_size=0.2, stratify=y_train, random_state=42
     )
 
-    # Train DNN nhanh trên X_tr để lấy importance (không thấy X_val)
-    prelim = build_dnn(X_tr.shape[1])
-    prelim.fit(X_tr, y_tr, epochs=10, batch_size=32, verbose=0)
-    importance = get_dnn_importance_scores(prelim)
+    rf = RandomForestClassifier(n_estimators=200)
+    rf.fit(X_tr, y_tr)
+    importance = rf.feature_importances_
 
-    # align importance với X_tr feature count
     n_features = X_tr.shape[1]
     if importance is not None:
         if len(importance) > n_features:
@@ -1153,9 +1174,9 @@ def auto_select_k(X_train, y_train, candidate_k=None):
     for k in candidate_k:
         idx = np.argsort(importance)[-k:] if importance is not None else np.arange(k)
 
-        rf = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42)
-        rf.fit(X_tr[:, idx], y_tr)
-        probs = rf.predict_proba(X_val[:, idx])[:, 1]
+        rf_val = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42)
+        rf_val.fit(X_tr[:, idx], y_tr)
+        probs = rf_val.predict_proba(X_val[:, idx])[:, 1]
         auc = roc_auc_score(y_val, probs)
 
         print(f"  k={k:>5} → AUC={auc:.4f}")
@@ -1174,7 +1195,6 @@ def auto_select_k(X_train, y_train, candidate_k=None):
 from sklearn.metrics import classification_report
 
 
-# FIX 3: evaluate_model phải return dict kết quả thay vì return None
 def evaluate_model(name, y_true, probs, threshold=0.5):
     preds = (probs > threshold).astype(int)
 
@@ -1191,7 +1211,6 @@ def evaluate_model(name, y_true, probs, threshold=0.5):
     print("\nClassification Report:")
     print(classification_report(y_true, preds))
 
-    # FIX 3: trả về dict thay vì None
     return {"accuracy": acc, "auc": auc, "confusion_matrix": cm}
 
 
@@ -1240,25 +1259,27 @@ def plot_feature_importance(importance, features, top_n=20, save_path=None):
     plt.show()
 
 
-def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
+def train_and_evaluate(X_train, X_test, y_train, y_test, feature_names, scaler=None):
+    """
+    Nhận vào X_train/X_test đã tách sẵn (không split lại ở đây).
+    Mọi fitting chỉ dùng X_train / y_train.
+    """
     print(f"\n{'='*60}")
     print("TRAINING AND EVALUATION")
     print(f"{'='*60}")
-    print(f"Dataset shape: {X.shape}")
+    print(f"X_train: {X_train.shape}  |  X_test: {X_test.shape}")
 
-    # STEP 1: Lọc feature xuất hiện quá ít
-    print("\n🔎 Step 1: Filtering infrequent features...")
-    X, freq_mask = filter_infrequent_features(X, threshold=0.01)
+    # STEP 1: Lọc feature xuất hiện quá ít (fit on train only)
+    print("\n🔎 Step 1: Filtering infrequent features (TRAIN SET ONLY)...")
+    X_train, X_test, freq_mask = filter_infrequent_features(
+        X_train, X_test, threshold=0.01
+    )
     print("\n🔎 FEATURE FILTERING")
     print("=" * 40)
     print(f"Before: {len(feature_names)} features")
     feature_names = [f for f, keep in zip(feature_names, freq_mask) if keep]
-    print(f"After : {X.shape[1]} features")
+    print(f"After : {X_train.shape[1]} features")
 
-    # STEP 2: Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=42
-    )
     print("\n📊 TRAIN / TEST SPLIT")
     print("=" * 40)
     print(f"Train samples: {len(y_train)}")
@@ -1270,11 +1291,11 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     print(f"  Benign : {(y_test==0).sum()}")
     print(f"  Malware: {(y_test==1).sum()}")
 
-    # STEP 3: Tự động chọn k (FIX 5: không leak val data)
+    # STEP 2: Tự động chọn k (chỉ dùng X_train / y_train)
     best_k, _ = auto_select_k(X_train, y_train, candidate_k=[500, 1000, 2000, 3000])
 
-    # STEP 4: Feature selection dùng DNN importance + best_k
-    print(f"\n🔍 Step 4: Feature selection (k={best_k})...")
+    # STEP 3: Feature selection bằng DNN importance (fit on X_train only)
+    print(f"\n🔍 Step 3: Feature selection (k={best_k}, TRAIN ONLY)...")
     prelim_dnn = build_dnn(X_train.shape[1])
     prelim_dnn.fit(X_train, y_train, epochs=3, verbose=0, batch_size=32)
     importance = get_dnn_importance_scores(prelim_dnn)
@@ -1284,8 +1305,8 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     )
     print(f"Selected {X_train_sel.shape[1]} features")
 
-    # STEP 5: Train models
-    print("\n🚀 Step 5: Training models...")
+    # STEP 4: Train models
+    print("\n🚀 Step 4: Training models...")
 
     print("→ Training SVM...")
     svm = SVC(kernel="linear", C=0.0625, probability=True)
@@ -1317,7 +1338,7 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     )
     dnn_probs = dnn.predict(X_test_sel, verbose=0).flatten()
 
-    # STEP 6: Evaluate (FIX 3: giờ results có giá trị thực)
+    # STEP 5: Evaluate
     print("\n📊 EVALUATION RESULTS")
     results = {
         "SVM": evaluate_model("SVM", y_test, svm_probs),
@@ -1325,6 +1346,7 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
         "DNN": evaluate_model("DNN", y_test, dnn_probs),
     }
 
+    os.makedirs("figs", exist_ok=True)
     plot_roc(
         y_test,
         {"SVM": svm_probs, "RF": rf_probs, "DNN": dnn_probs},
@@ -1333,9 +1355,7 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
 
     selected_features = [feature_names[i] for i in selected_idx]
 
-    # =========================
-    # Feature Importance (FINAL MODEL)
-    # =========================
+    # Feature Importance
     importance = get_dnn_importance_scores(dnn)
     final_importance = importance[: len(selected_idx)]
     final_importance = final_importance / np.sum(final_importance)
@@ -1358,7 +1378,6 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     for k, v in group_importance.items():
         print(f"{k}: {v:.4f}")
 
-    # Tách index symbolic vs embedding
     symbolic_idx = []
     embedding_idx = []
 
@@ -1368,7 +1387,6 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
         elif f.startswith("EMB"):
             embedding_idx.append(i)
 
-    # align lại chiều
     importance = importance[: len(selected_idx)]
 
     idx_map = {feat_idx: pos for pos, feat_idx in enumerate(selected_idx)}
@@ -1376,9 +1394,9 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     sym_features = [feature_names[i] for i in symbolic_idx]
     sym_importance = [importance[idx_map[i]] for i in symbolic_idx]
 
-    # Embedding
     emb_features = [feature_names[i] for i in embedding_idx]
     emb_importance = [importance[idx_map[i]] for i in embedding_idx]
+
     plot_feature_importance(
         np.array(sym_importance),
         sym_features,
@@ -1435,23 +1453,23 @@ if __name__ == "__main__":
         print("No APKs found. Please check the directory structure.")
         exit(1)
 
-    # Step 3: Build dataset
-    X, y, feature_names, scaler = update_dataset(
-        cache_dir="dataset_cache",
+    # Step 3: Build dataset (trả về train/test đã tách sẵn, không leak)
+    X_train, X_test, y_train, y_test, feature_names, scaler = build_dataset(
         apk_dirs=apk_dirs,
         labels=labels,
-        build_dataset_fn=build_dataset,
         max_workers=8,
         use_cache=True,
     )
 
     print("\n📦 FEATURE DATASET")
     print("=" * 40)
-    print(f"Feature shape : {X.shape}")
-    print(f"#Features     : {X.shape[1]}")
-    print(f"#Samples      : {X.shape[0]}")
+    print(f"X_train : {X_train.shape}")
+    print(f"X_test  : {X_test.shape}")
+    print(f"#Features: {X_train.shape[1]}")
 
     # Step 4: Train and evaluate
-    output = train_and_evaluate(X, y, feature_names, scaler=scaler)
+    output = train_and_evaluate(
+        X_train, X_test, y_train, y_test, feature_names, scaler=scaler
+    )
 
     print("\n✅ Training complete!")
