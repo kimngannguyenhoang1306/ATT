@@ -23,6 +23,8 @@ RAW_DIR = "raw_apk"
 DECODED_DIR = "decoded"
 CACHE_DIR = "mos_cache"
 MAX_WORKERS = 4
+MAX_METHODS_PER_APK = 2000
+MAX_BLOCKS_PER_METHOD = 150
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -200,6 +202,8 @@ def parse_smali_file(path):
 
         if current_block:
             current_blocks.append(current_block)
+        if len(current_blocks) > MAX_BLOCKS_PER_METHOD:
+            current_blocks = current_blocks[:MAX_BLOCKS_PER_METHOD]
         if current_blocks:
             methods.append(current_blocks)
 
@@ -217,6 +221,9 @@ def parse_smali_dir(smali_dir):
             if f.endswith(".smali"):
                 methods = parse_smali_file(os.path.join(root, f))
                 all_methods.extend(methods)
+
+                if len(all_methods) >= MAX_METHODS_PER_APK:
+                    return all_methods[:MAX_METHODS_PER_APK]
 
     return all_methods
 
