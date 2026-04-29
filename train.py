@@ -772,7 +772,7 @@ def train_w2v(
         negative=20,  # ↑ from 15
         sample=1e-4,
         workers=os.cpu_count(),
-        epochs=15,  # ↑ from 8
+        epochs=8,
     )
 
     print("🧠 Building vocabulary...")
