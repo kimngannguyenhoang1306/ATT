@@ -55,7 +55,7 @@ import tensorflow as tf
 # =========================
 # CONSTANTS
 # =========================
-MAX_BLOCKS_PER_APK = 20000
+MAX_BLOCKS_PER_APK = 10000
 TERMINATORS = {"R"}  # return  → terminates block
 BRANCH_OPS = {"I"}  # if-*    → terminates block (branch)
 W2V_MODEL_PATH = "w2v_model.model"
@@ -148,7 +148,7 @@ def decode_apk(apk_path: str, output_dir: str) -> bool:
         return False
 
 
-def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8):
+def batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=4):
     apk_tasks = []
     for label in ["benign", "malware"]:
         input_dir = os.path.join(raw_root, label)
@@ -472,7 +472,10 @@ def graph_to_features_fast(G: nx.DiGraph) -> Counter:
     features[("BRANCH_NODES",)] = branch_nodes
 
     try:
-        features[("CYCLE_COUNT",)] = len(list(nx.simple_cycles(G)))
+        if G.number_of_nodes() < 1000:
+            features[("CYCLE_COUNT",)] = len(list(nx.simple_cycles(G)))
+        else:
+            features[("CYCLE_COUNT",)] = 0
     except Exception:
         features[("CYCLE_COUNT",)] = 0
 
@@ -1220,7 +1223,7 @@ def train_and_evaluate(
 # =========================
 if __name__ == "__main__":
     # Step 1: Decode APKs
-    batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=8)
+    batch_decode_full(raw_root="raw_apk", decoded_root="decoded", max_workers=4)
 
     # Step 2: Collect APK smali paths
     apk_dirs: list[str] = []
@@ -1254,7 +1257,7 @@ if __name__ == "__main__":
     X_train, X_test, y_train, y_test, feature_names, scaler = build_dataset(
         apk_dirs=apk_dirs,
         labels=labels,
-        max_workers=8,
+        max_workers=4,
         use_cache=True,
     )
 
