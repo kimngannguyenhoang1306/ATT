@@ -332,7 +332,7 @@ def build_cfg_from_blocks(blocks):
             target_label = None
 
         # ✅ fall-through edge
-        if op not in ["return", "return-void"] and i + 1 < n:
+        if not op.startswith("return") and i + 1 < n:
             G.add_edge(i, i + 1)
 
         # 🔥 FIX 2: jump edge REAL CFG
@@ -343,75 +343,8 @@ def build_cfg_from_blocks(blocks):
 
 
 def build_cfg_from_file(file_path):
-    G = nx.DiGraph()
-    blocks = []
-    current = []
-    in_method = False
-
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-    except Exception:
-        return G, blocks
-
-    for line in lines:
-        line = normalize_line(line.strip())
-
-        if not line:
-            continue
-
-        if line.startswith(".method"):
-            in_method = True
-            current = []
-            continue
-
-        if line.startswith(".end method"):
-            if current:
-                blocks.append(current)
-            current = []
-            in_method = False
-            continue
-
-        if not in_method:
-            continue
-
-        if line.startswith(":"):
-            if current:
-                blocks.append(current)
-                current = []
-            continue
-
-        parts = line.split()
-        if not parts:
-            continue
-
-        token = parts[0]
-
-        if token in CATEGORY:
-            current.append((CATEGORY[token], token, api_name))
-
-        if token in TERMINATORS or token in BRANCH_OPS:
-            if current:
-                blocks.append(current)
-            current = []
-
-    if current:
-        blocks.append(current)
-
-    # FIX 1 (same): chỉ thêm edge khi node tiếp theo tồn tại
-    n = len(blocks)
-    for i, block in enumerate(blocks):
-        G.add_node(i, features=block)
-
-        last_op = block[-1] if block else None
-
-        if last_op in BRANCH_OPS:
-            if i + 1 < n:
-                G.add_edge(i, i + 1)
-        elif last_op not in TERMINATORS:
-            if i + 1 < n:
-                G.add_edge(i, i + 1)
-
+    blocks = extract_blocks_only(file_path)
+    G = build_cfg_from_blocks(blocks)
     return G, blocks
 
 
@@ -532,14 +465,10 @@ def extract_api_sequence(blocks):
             if not isinstance(item, tuple):
                 continue
 
-            if not isinstance(item, tuple):
-                continue
-
-            if len(item) == 3:
+            if len(item) == 4:
+                cat, op, api_name, target = item
+            elif len(item) == 3:
                 cat, op, api_name = item
-            elif len(item) == 2:
-                cat, op = item
-                api_name = None
             else:
                 continue
 
@@ -561,38 +490,32 @@ def extract_api_sequence(blocks):
     return api_seq
 
 
-def graph_to_features_fast(blocks):
+def graph_to_features_fast(G, blocks):
     features = Counter()
 
-    num_blocks = len(blocks)
-    features[("NODE_COUNT",)] = num_blocks
-    features[("EDGE_COUNT",)] = max(0, num_blocks - 1)
+    features[("NODE_COUNT",)] = G.number_of_nodes()
+    features[("EDGE_COUNT",)] = G.number_of_edges()
 
-    # AVG BLOCK SIZE
-    avg_size = sum(len(b) for b in blocks) / num_blocks if num_blocks > 0 else 0
-    features[("AVG_BLOCK_SIZE",)] = avg_size
+    # Degree stats
+    degrees = [d for _, d in G.degree()]
+    if degrees:
+        features[("AVG_DEGREE",)] = np.mean(degrees)
+        features[("MAX_DEGREE",)] = np.max(degrees)
 
-    branch_count = 0
-    loop_count = 0
+    # Branch nodes (out_degree > 1)
+    branch_nodes = sum(1 for n in G.nodes() if G.out_degree(n) > 1)
+    features[("BRANCH_NODES",)] = branch_nodes
 
-    for i, block in enumerate(blocks):
-        for item in block:
-            if isinstance(item, tuple):
-                cat = item[0]
-            else:
-                continue
+    # Loop detection (cycle)
+    try:
+        cycles = list(nx.simple_cycles(G))
+        features[("CYCLE_COUNT",)] = len(cycles)
+    except:
+        features[("CYCLE_COUNT",)] = 0
 
-            if cat == "I":
-                branch_count += 1
-
-        # 🔥 loop approx: backward jump
-        if i > 0:
-            # nếu block nhỏ → coi như loop (heuristic đơn giản)
-            if len(block) < 3:
-                loop_count += 1
-
-    features[("BRANCH_COUNT",)] = branch_count
-    features[("LOOP_COUNT",)] = loop_count
+    # Density
+    if G.number_of_nodes() > 1:
+        features[("DENSITY",)] = nx.density(G)
 
     return features
 
@@ -624,7 +547,7 @@ def train_opcode_embedding(all_blocks, vector_size=32, model_path=None):
         def __iter__(self):
             for block in self.blocks:
                 if block:
-                    yield [str(op) for op in block]
+                    yield [op[1] for op in block if isinstance(op, tuple)]
 
     model = Word2Vec(
         vector_size=vector_size,
@@ -663,7 +586,7 @@ def encode_block(block, w2v_model, vector_size=32):
 
     vectors = []
     for op in block:
-        key = str(op)
+        key = op[1]
         if key in w2v_model.wv:
             vectors.append(w2v_model.wv[key])
 
@@ -673,27 +596,35 @@ def encode_block(block, w2v_model, vector_size=32):
     return np.mean(vectors, axis=0)
 
 
-def graph_embedding(blocks, w2v_model, vector_size=32):
+def graph_embedding(blocks, G, w2v_model, vector_size=32):
     if w2v_model is None:
         return np.zeros(vector_size)
 
-    vecs = []
     wv = w2v_model.wv
+    node_vecs = []
 
-    import random
+    for node in G.nodes():
+        block = G.nodes[node]["features"]
 
-    sampled_blocks = blocks if len(blocks) <= 5000 else random.sample(blocks, 5000)
-
-    for block in sampled_blocks:
+        block_vecs = []
         for op in block:
-            key = str(op)
+            key = op[1]
             if key in wv:
-                vecs.append(wv[key])
+                block_vecs.append(wv[key])
 
-    if not vecs:
+        if block_vecs:
+            node_vec = np.mean(block_vecs, axis=0)
+
+            # 🔥 thêm structural signal: degree
+            degree = G.degree(node)
+            node_vec = node_vec * (1 + degree * 0.1)
+
+            node_vecs.append(node_vec)
+
+    if not node_vecs:
         return np.zeros(vector_size)
 
-    return np.mean(vecs, axis=0)
+    return np.mean(node_vecs, axis=0)
 
 
 # =========================
@@ -857,9 +788,9 @@ def duplicate_blocks(blocks, prob=0.2):
 
 
 def obfuscate_blocks(blocks):
-    blocks = inject_junk_blocks(blocks, prob=0.3)
-    blocks = duplicate_blocks(blocks, prob=0.2)
-    blocks = shuffle_blocks(blocks, prob=0.1)
+    blocks = inject_junk_blocks(blocks, prob=0.1)
+    # blocks = duplicate_blocks(blocks, prob=0.2)
+    # blocks = shuffle_blocks(blocks, prob=0.1)
     return blocks
 
 
@@ -873,8 +804,8 @@ def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
 
     mos = build_mos_from_blocks(blocks)
     api = extract_api_sequence(blocks)
-    cfg_feat = graph_to_features_fast(blocks)
-    emb = graph_embedding(blocks, w2v_model)
+    cfg_feat = graph_to_features_fast(G, blocks)
+    emb = graph_embedding(blocks, G, w2v_model)
 
     return {
         "mos": mos,
@@ -894,15 +825,15 @@ def process_apk_cached(smali_dir, w2v_model):
                 cached = pickle.load(f)
 
             blocks = cached["blocks"]
+            G = build_cfg_from_blocks(blocks)
 
             return {
                 "mos": cached["mos"],
                 "api": cached["api"],
-                "cfg": cached["cfg"],
+                "cfg": graph_to_features(G, blocks),  # 🔥 FIX
                 "blocks": blocks,
                 "emb": cached["emb"],
             }
-
     except Exception:
         pass
 
@@ -969,11 +900,12 @@ def build_dataset(
         data = process_apk_cached(smali_dir, w2v_model)
 
         blocks_aug = obfuscate_blocks(data["blocks"])
+        G_aug = build_cfg_from_blocks(blocks_aug)
 
         mos = build_mos_from_blocks(blocks_aug)
         api = extract_api_sequence(blocks_aug)
-        cfg = graph_to_features_fast(blocks_aug)
-        emb = graph_embedding(blocks_aug, w2v_model)
+        cfg = graph_to_features_fast(G_aug, blocks_aug)
+        emb = graph_embedding(blocks_aug, G_aug, w2v_model)
 
         data_aug = {
             "mos": mos,
@@ -1026,11 +958,28 @@ def build_dataset(
     X = scaler.fit_transform(np.array(X))
     y = np.array(combined_labels)
 
+    def format_feature_name(f):
+        if isinstance(f, tuple):
+            parts = []
+            for item in f:
+                if isinstance(item, tuple):
+                    if len(item) >= 2:
+                        op = item[1]
+                        if len(item) >= 3 and item[2]:
+                            parts.append(f"{op}:{item[2]}")
+                        else:
+                            parts.append(op)
+                else:
+                    parts.append(str(item))
+            return " → ".join(parts)
+
+        return str(f)
+
     feature_names = (
-        list(mos_vocab.keys())
-        + list(api_vocab.keys())
-        + list(cfg_vocab.keys())
-        + [f"emb_{i}" for i in range(vector_size)]
+        [f"MOS:{format_feature_name(k)}" for k in mos_vocab.keys()]
+        + [f"API:{k}" for k in api_vocab.keys()]
+        + [f"CFG:{k[0]}" for k in cfg_vocab.keys()]
+        + [f"EMB:{i}" for i in range(vector_size)]
     )
 
     print(f"\n✅ Dataset built: X={X.shape}, y={y.shape}")
@@ -1223,10 +1172,10 @@ def plot_feature_importance(importance, features, top_n=20, save_path=None):
     plt.figure(figsize=(10, 8))
     plt.barh(range(top_n), importance[idx], color="steelblue")
 
-    labels = [
-        " ".join(features[i]) if isinstance(features[i], tuple) else str(features[i])
-        for i in idx
-    ]
+    def shorten(s, max_len=50):
+        return s if len(s) <= max_len else s[:50] + "..."
+
+    labels = [shorten(str(features[i])) for i in idx]
     plt.yticks(range(top_n), labels)
     plt.xlabel("Importance Score")
     plt.title(f"Top {top_n} Feature Importance")
@@ -1329,17 +1278,41 @@ def train_and_evaluate(X, y, feature_names, scaler=None, test_size=0.2):
     )
 
     selected_features = [feature_names[i] for i in selected_idx]
+
+    # =========================
+    # Feature Importance (FINAL MODEL)
+    # =========================
+    importance = get_dnn_importance_scores(dnn)
+    final_importance = importance[: len(selected_idx)]
+    final_importance = final_importance / np.sum(final_importance)
+
+    from collections import defaultdict
+
+    group_importance = defaultdict(float)
+
+    for i, feat in enumerate(selected_features):
+        if feat.startswith("API"):
+            group_importance["API"] += final_importance[i]
+        elif feat.startswith("MOS"):
+            group_importance["MOS"] += final_importance[i]
+        elif feat.startswith("CFG"):
+            group_importance["CFG"] += final_importance[i]
+        elif feat.startswith("EMB"):
+            group_importance["EMB"] += final_importance[i]
+
+    print("\n📊 Feature Group Importance:")
+    for k, v in group_importance.items():
+        print(f"{k}: {v:.4f}")
+
     # Tách index symbolic vs embedding
     symbolic_idx = []
     embedding_idx = []
 
     for i, f in zip(selected_idx, selected_features):
-        if isinstance(f, tuple) or f == "API_CALL" or "COUNT" in str(f):
+        if f.startswith("MOS") or f.startswith("API") or f.startswith("CFG"):
             symbolic_idx.append(i)
-        elif str(f).startswith("emb_"):
+        elif f.startswith("EMB"):
             embedding_idx.append(i)
-
-    importance = get_dnn_importance_scores(dnn)
 
     # align lại chiều
     importance = importance[: len(selected_idx)]
