@@ -288,8 +288,6 @@ def extract_blocks_only(file_path):
             # block split
             cat = CATEGORY.get(token, "X")
 
-            current.append((cat, token, api_name, target_label))
-
             # split logic
             if cat in TERMINATORS or cat in BRANCH_OPS:
                 if current:
@@ -817,7 +815,7 @@ def process_single_apk(smali_dir, w2v_model, G=None, blocks=None):
         "api": api,
         "cfg": cfg_feat,
         "emb": emb,
-        "blocks": blocks,
+        "blocks": None,
     }
 
 
@@ -863,11 +861,21 @@ def process_apk_cached(smali_dir, w2v_model):
     return result
 
 
+class SentenceIterable:
+    def __init__(self, apk_blocks):
+        self.apk_blocks = apk_blocks
+
+    def __iter__(self):
+        for blocks in self.apk_blocks.values():
+            for block in blocks:
+                if block:
+                    yield [op[1] for op in block if isinstance(op, tuple)]
+
+
 def build_dataset(
     apk_dirs, labels, max_workers=8, vector_size=32, use_cache=True, test_size=0.2
 ):
     apk_blocks = {}
-    all_blocks = []
 
     print("\n📊 Step 1: Collecting blocks (ONE PASS ONLY)...")
 
@@ -877,9 +885,9 @@ def build_dataset(
         else:
             blocks = build_blocks_only(smali_dir)
         apk_blocks[smali_dir] = blocks
-        all_blocks.extend(blocks)
 
-    print(f"Total blocks collected: {len(all_blocks)}")
+    total_blocks = sum(len(b) for b in apk_blocks.values())
+    print(f"Total blocks collected: {total_blocks}")
 
     print("\n🧠 Step 2: Training Word2Vec embedding...")
     model_path = "w2v_model.model"
@@ -889,9 +897,30 @@ def build_dataset(
         print("📦 Loaded cached Word2Vec")
     else:
         print("🧠 Training Word2Vec...")
-        w2v_model = train_opcode_embedding(
-            all_blocks, vector_size, model_path=model_path
+        sentences = SentenceIterable(apk_blocks)
+
+        model = Word2Vec(
+            vector_size=vector_size,
+            window=5,
+            min_count=2,
+            sg=1,
+            negative=15,
+            sample=1e-4,
+            workers=os.cpu_count(),
+            epochs=8,
         )
+
+        print("🧠 Building vocabulary...")
+        model.build_vocab(sentences)
+
+        print("🚀 Training Word2Vec...")
+        model.train(
+            sentences,
+            total_examples=model.corpus_count,
+            epochs=model.epochs,
+        )
+
+        w2v_model = model
         w2v_model.save(model_path)
 
     print("\n🔧 Step 3: Extracting features from all APKs...")
@@ -905,15 +934,16 @@ def build_dataset(
         data = process_apk_cached(smali_dir, w2v_model)
 
         label = labels[idx]
+        blocks = get_blocks_cached(smali_dir)
 
         # ✅ CHỈ augment malware
         if label == 1:
-            blocks_aug = obfuscate_blocks(data["blocks"])
+            blocks_aug = obfuscate_blocks(blocks)
         else:
-            blocks_aug = data["blocks"]
+            blocks_aug = blocks
 
         # ✅ CFG: luôn build từ blocks gốc (KHÔNG dùng augmented)
-        G = build_cfg_from_blocks(data["blocks"])
+        G = build_cfg_from_blocks(blocks)
 
         mos = build_mos_from_blocks(blocks_aug)
         api = extract_api_sequence(blocks_aug)
@@ -921,7 +951,7 @@ def build_dataset(
         # ✅ CFG giữ nguyên (semantic feature)
         cfg = data["cfg"]
 
-        emb = graph_embedding(data["blocks"], G, w2v_model)
+        emb = graph_embedding(blocks, G, w2v_model)
 
         data_aug = {
             "mos": mos,
