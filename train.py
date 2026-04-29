@@ -532,11 +532,16 @@ def extract_api_sequence(blocks):
             if not isinstance(item, tuple):
                 continue
 
+            if not isinstance(item, tuple):
+                continue
+
             if len(item) == 3:
                 cat, op, api_name = item
-            else:
+            elif len(item) == 2:
                 cat, op = item
                 api_name = None
+            else:
+                continue
 
             if op.startswith("invoke"):
                 # 1. loại invoke
@@ -822,7 +827,15 @@ def inject_junk_blocks(blocks, prob=0.3):
 
         if random.random() < prob:
             junk = random.choice(JUNK_OPS)
-            junk_encoded = [CATEGORY.get(op.split()[0], "X") for op in junk]
+
+            junk_encoded = []
+            for op_line in junk:
+                op = op_line.split()[0]
+                cat = CATEGORY.get(op, "X")
+
+                # ✅ FIX: giữ đúng format tuple như block gốc
+                junk_encoded.append((cat, op, None))
+
             new_blocks.append(junk_encoded)
 
     return new_blocks
