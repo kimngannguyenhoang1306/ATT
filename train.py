@@ -1295,7 +1295,7 @@ def auto_select_k(
 ) -> tuple[int, float]:
     """Train ONE DNN on full features; evaluate each k via val-AUC."""
     if candidate_k is None:
-        candidate_k = [500, 1000, 1500, 2000, 3000, 5000]
+        candidate_k = [500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 5000]
     candidate_k = [k for k in candidate_k if k <= X_train.shape[1]]
     if not candidate_k:
         return X_train.shape[1], 0.0
@@ -1306,9 +1306,12 @@ def auto_select_k(
         X_train, y_train, test_size=0.2, stratify=y_train, random_state=42
     )
 
-    full_dnn = build_dnn(X_tr.shape[1])
-    full_dnn.fit(X_tr, y_tr, epochs=10, batch_size=64, verbose=0)
-    importance = get_dnn_importance(full_dnn, X_tr.shape[1])
+    rf_imp = RandomForestClassifier(
+        n_estimators=200, n_jobs=-1, class_weight="balanced", random_state=42
+    )
+
+    rf_imp.fit(X_tr, y_tr)
+    importance = rf_imp.feature_importances_
 
     best_k, best_auc = candidate_k[0], 0.0
 
@@ -1497,14 +1500,25 @@ def train_and_evaluate(
 
     # Step 2: auto-select k
     best_k, _ = auto_select_k(
-        X_train, y_train, candidate_k=[500, 1000, 1500, 2000, 3000, 5000]
+        X_train,
+        y_train,
+        candidate_k=[500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 5000],
     )
 
     # Step 3: preliminary DNN for importance
-    print(f"\n🔍 Step 3: Preliminary DNN for importance → top {best_k}...")
-    prelim_dnn = build_dnn(X_train.shape[1])
-    prelim_dnn.fit(X_train, y_train, epochs=8, verbose=0, batch_size=64)
-    importance = get_dnn_importance(prelim_dnn, X_train.shape[1])
+    print(f"\n🔍 Step 3: Feature importance using Random Forest...")
+
+    rf_imp = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=None,
+        n_jobs=-1,
+        class_weight="balanced",
+        random_state=42,
+    )
+
+    rf_imp.fit(X_train, y_train)
+
+    importance = rf_imp.feature_importances_
 
     X_train_sel, X_test_sel, selected_idx = select_top_k_features(
         X_train, X_test, importance, k=best_k
