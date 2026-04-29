@@ -358,4 +358,4 @@ def train_and_eval(X_train, X_test, y_train, y_test):
 if __name__ == "__main__":
     batch_decode()
     X_train, X_test, y_train, y_test = build_dataset()
-    train_eval(X_train, X_test, y_train, y_test)
+    train_and_eval(X_train, X_test, y_train, y_test)
