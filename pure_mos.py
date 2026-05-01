@@ -1,20 +1,20 @@
-# =========================
-# MOSDroid PURE (FINAL)
-# =========================
-
 import os
 import re
 import pickle
 import subprocess
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
+import networkx as nx
 from tqdm import tqdm
+
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
-
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_extraction.text import TfidfTransformer
 
 # =========================
 # CONFIG
@@ -23,131 +23,38 @@ RAW_DIR = "raw_apk"
 DECODED_DIR = "decoded"
 CACHE_DIR = "mos_cache"
 MAX_WORKERS = 4
-MAX_METHODS_PER_APK = 2000
-MAX_BLOCKS_PER_METHOD = 150
+K_GRAM = 2
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # =========================
-# OPCODE → CATEGORY
+# OPCODE CATEGORY (EXTENDED)
 # =========================
-CATEGORY = {}
-
-
-def init_opcode():
-    ops = [
-        "move",
-        "move/from16",
-        "move/16",
-        "move-wide",
-        "move-object",
-        "return",
-        "return-void",
-        "return-object",
-        "throw",
-        "const",
-        "const/4",
-        "const/16",
-        "const-string",
-        "goto",
-        "goto/16",
-        "goto/32",
-        "if-eq",
-        "if-ne",
-        "if-lt",
-        "if-gt",
-        "if-le",
-        "if-ge",
-        "invoke-virtual",
-        "invoke-static",
-        "invoke-direct",
-        "invoke-interface",
-        "iget",
-        "iget-object",
-        "sget",
-        "sget-object",
-        "iput",
-        "iput-object",
-        "sput",
-        "sput-object",
-        "add-int",
-        "sub-int",
-        "mul-int",
-        "div-int",
-        "rem-int",
-    ]
-
-    for op in ops:
-        if "move" in op:
-            CATEGORY[op] = "M"
-        elif "return" in op or "throw" in op:
-            CATEGORY[op] = "R"
-        elif "if-" in op:
-            CATEGORY[op] = "I"
-        elif "goto" in op or "invoke" in op:
-            CATEGORY[op] = "V"
-        elif "get" in op:
-            CATEGORY[op] = "G"
-        elif "put" in op:
-            CATEGORY[op] = "P"
-        elif "const" in op:
-            CATEGORY[op] = "D"
-        elif any(x in op for x in ["add", "sub", "mul", "div", "rem"]):
-            CATEGORY[op] = "A"
-        else:
-            CATEGORY[op] = "X"
-
-
-init_opcode()
+def map_opcode(op):
+    if op.startswith("move"):
+        return "M"
+    if op.startswith("return") or op == "throw":
+        return "R"
+    if op.startswith("if-"):
+        return "I"
+    if op.startswith("goto"):
+        return "G"
+    if op.startswith("invoke"):
+        return "V"
+    if "get" in op:
+        return "G"
+    if "put" in op:
+        return "P"
+    if op.startswith("const"):
+        return "D"
+    if any(x in op for x in ["add", "sub", "mul", "div", "rem"]):
+        return "A"
+    return "X"
 
 
 # =========================
-# APK DECODE
-# =========================
-def decode_apk(apk_path, out_dir):
-    try:
-        subprocess.run(
-            ["apktool", "d", apk_path, "-o", out_dir, "-f", "-r"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-        return True
-    except:
-        return False
-
-
-def batch_decode():
-    tasks = []
-
-    for label in ["benign", "malware"]:
-        in_dir = os.path.join(RAW_DIR, label)
-        out_dir = os.path.join(DECODED_DIR, label)
-        os.makedirs(out_dir, exist_ok=True)
-
-        for apk in os.listdir(in_dir):
-            if not apk.endswith(".apk"):
-                continue
-
-            apk_path = os.path.join(in_dir, apk)
-            out_path = os.path.join(out_dir, apk.replace(".apk", ""))
-
-            if os.path.exists(out_path):
-                continue
-
-            tasks.append((apk_path, out_path))
-
-    print(f"Decoding {len(tasks)} APKs...")
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [ex.submit(decode_apk, a, b) for a, b in tasks]
-        for _ in tqdm(as_completed(futures), total=len(futures)):
-            pass
-
-
-# =========================
-# SMALI PARSER (METHOD-LEVEL)
+# NORMALIZE
 # =========================
 REGISTER = re.compile(r"v\d+|p\d+")
 
@@ -158,123 +65,105 @@ def normalize(line):
     return line.strip()
 
 
-def parse_smali_file(path):
-    methods = []
-    current_blocks = []
-    current_block = []
-    in_method = False
+# =========================
+# CFG PARSER
+# =========================
+def parse_smali_cfg(path):
+    blocks = []
+    edges = []
+    current = []
+    label_map = {}
+    block_id = 0
 
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
-            for raw in f:
-                line = normalize(raw)
+            lines = [normalize(l) for l in f]
 
-                if line.startswith(".method"):
-                    in_method = True
-                    current_blocks = []
-                    current_block = []
-                    continue
+        for i, line in enumerate(lines):
+            if line.startswith(":"):
+                if current:
+                    blocks.append(current)
+                    block_id += 1
+                    current = []
+                label_map[line] = block_id
+                continue
 
-                if line.startswith(".end method"):
-                    if current_block:
-                        current_blocks.append(current_block)
-                    if current_blocks:
-                        methods.append(current_blocks)
-                    in_method = False
-                    continue
+            parts = line.split()
+            if not parts:
+                continue
 
-                if not in_method:
-                    continue
+            op = parts[0]
+            current.append(map_opcode(op))
 
-                if line.startswith(":"):
-                    if current_block:
-                        current_blocks.append(current_block)
-                    current_block = []
-                    continue
+            # edges
+            if op.startswith("if-") and len(parts) > 1:
+                edges.append((block_id, parts[-1]))
+            elif op.startswith("goto") and len(parts) > 1:
+                edges.append((block_id, parts[-1]))
 
-                parts = line.split()
-                if not parts:
-                    continue
+        if current:
+            blocks.append(current)
 
-                op = parts[0]
-                if op in CATEGORY:
-                    current_block.append(CATEGORY[op])
+        # build graph
+        G = nx.DiGraph()
+        for i in range(len(blocks)):
+            G.add_node(i)
 
-        if current_block:
-            current_blocks.append(current_block)
-        if len(current_blocks) > MAX_BLOCKS_PER_METHOD:
-            current_blocks = current_blocks[:MAX_BLOCKS_PER_METHOD]
-        if current_blocks:
-            methods.append(current_blocks)
+        for src, label in edges:
+            if label in label_map:
+                G.add_edge(src, label_map[label])
+
+        return blocks, G
 
     except:
-        pass
-
-    return methods
-
-
-def parse_smali_dir(smali_dir):
-    all_methods = []
-
-    for root, _, files in os.walk(smali_dir):
-        for f in files:
-            if f.endswith(".smali"):
-                methods = parse_smali_file(os.path.join(root, f))
-                all_methods.extend(methods)
-
-                if len(all_methods) >= MAX_METHODS_PER_APK:
-                    return all_methods[:MAX_METHODS_PER_APK]
-
-    return all_methods
+        return [], nx.DiGraph()
 
 
 # =========================
-# MOS FEATURE (CORE)
+# K-GRAM ENCODING
 # =========================
-def encode_block(block):
-    return "".join(block)
+def kgram(block, k=2):
+    seq = []
+    for i in range(len(block) - k + 1):
+        seq.append("".join(block[i : i + k]))
+    return seq
 
 
+# =========================
+# MOS EXTRACTION
+# =========================
 def extract_mos(smali_dir):
     cache_path = os.path.join(CACHE_DIR, f"{hash(smali_dir)}.pkl")
-
     if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
-
-    methods = parse_smali_dir(smali_dir)
+        return pickle.load(open(cache_path, "rb"))
 
     apk_counter = Counter()
 
-    for method in methods:
-        method_counter = Counter()
+    for root, _, files in os.walk(smali_dir):
+        for f in files:
+            if not f.endswith(".smali"):
+                continue
 
-        for block in method:
-            enc = encode_block(block)
-            if enc:
-                method_counter[enc] += 1
+            blocks, _ = parse_smali_cfg(os.path.join(root, f))
 
-        # merge method → APK
-        apk_counter.update(method_counter)
+            for block in blocks:
+                grams = kgram(block, K_GRAM)
+                apk_counter.update(grams)
 
-    with open(cache_path, "wb") as f:
-        pickle.dump(apk_counter, f)
-
+    pickle.dump(apk_counter, open(cache_path, "wb"))
     return apk_counter
 
 
 # =========================
 # VECTORIZE
 # =========================
-def build_vocab(counters, max_features=3000, min_freq=2):
+def build_vocab(counters, max_features=5000):
     total = Counter()
     for c in counters:
         total.update(c)
 
-    items = [(k, v) for k, v in total.items() if v >= min_freq]
-    items.sort(key=lambda x: -x[1])
-
-    return {k: i for i, (k, _) in enumerate(items[:max_features])}
+    items = total.most_common(max_features)
+    return {k: i for i, (k, _) in enumerate(items)}
 
 
 def vectorize(counter, vocab):
@@ -286,26 +175,21 @@ def vectorize(counter, vocab):
 
 
 # =========================
-# BUILD DATASET
+# DATASET
 # =========================
 def build_dataset():
     dirs, labels = [], []
 
     for label, folder in [(0, "benign"), (1, "malware")]:
-        path = os.path.join(DECODED_DIR, folder)
-        for app in os.listdir(path):
-            smali = os.path.join(path, app, "smali")
+        base = os.path.join(DECODED_DIR, folder)
+        for app in os.listdir(base):
+            smali = os.path.join(base, app, "smali")
             if os.path.exists(smali):
                 dirs.append(smali)
                 labels.append(label)
 
-    print(f"Total samples: {len(dirs)}")
-
     train_idx, test_idx = train_test_split(
-        list(range(len(dirs))),
-        stratify=labels,
-        test_size=0.2,
-        random_state=42,
+        list(range(len(dirs))), stratify=labels, test_size=0.2, random_state=42
     )
 
     train_dirs = [dirs[i] for i in train_idx]
@@ -313,8 +197,6 @@ def build_dataset():
 
     y_train = np.array([labels[i] for i in train_idx])
     y_test = np.array([labels[i] for i in test_idx])
-
-    print("Extracting MOS...")
 
     train_counters = [extract_mos(d) for d in tqdm(train_dirs)]
     test_counters = [extract_mos(d) for d in tqdm(test_dirs)]
@@ -324,14 +206,24 @@ def build_dataset():
     X_train = np.array([vectorize(c, vocab) for c in train_counters])
     X_test = np.array([vectorize(c, vocab) for c in test_counters])
 
+    # TF-IDF
+    tfidf = TfidfTransformer()
+    X_train = tfidf.fit_transform(X_train).toarray()
+    X_test = tfidf.transform(X_test).toarray()
+
+    # Normalize
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+
     return X_train, X_test, y_train, y_test
 
 
 # =========================
-# TRAIN & EVAL
+# TRAIN
 # =========================
 def train_and_eval(X_train, X_test, y_train, y_test):
-    print("\n=== SVM ===")
+    print("=== SVM ===")
     svm = SVC(kernel="linear", probability=True)
     svm.fit(X_train, y_train)
     probs = svm.predict_proba(X_test)[:, 1]
@@ -341,8 +233,8 @@ def train_and_eval(X_train, X_test, y_train, y_test):
     print("AUC:", roc_auc_score(y_test, probs))
     print(classification_report(y_test, preds))
 
-    print("\n=== Random Forest ===")
-    rf = RandomForestClassifier(n_estimators=200)
+    print("\n=== RF ===")
+    rf = RandomForestClassifier(n_estimators=300)
     rf.fit(X_train, y_train)
     probs = rf.predict_proba(X_test)[:, 1]
     preds = (probs > 0.5).astype(int)
@@ -356,6 +248,5 @@ def train_and_eval(X_train, X_test, y_train, y_test):
 # MAIN
 # =========================
 if __name__ == "__main__":
-    batch_decode()
     X_train, X_test, y_train, y_test = build_dataset()
     train_and_eval(X_train, X_test, y_train, y_test)
