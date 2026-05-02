@@ -111,9 +111,9 @@ CAT1_MAPPING = {
 APK_DIR = "raw_apk/"
 MALWARE_DIR = "raw_apk/malware/"
 BENIGN_DIR = "raw_apk/benign/"
-DECOMPILED_DIR = "data/decompiled/"
-APK_MOS_DIR = "data/apk_mos/"
-FEATURES_DIR = "data/features/"
+DECOMPILED_DIR = "raw_apk/decompiled/"
+APK_MOS_DIR = "raw_apk/apk_mos/"
+FEATURES_DIR = "raw_apk/features/"
 MODELS_DIR = "models/"
 
 # Feature selection
