@@ -47,19 +47,16 @@ OBFUSCATION_TECHNIQUES = {
 
 
 def check_obfuscapk():
-    """Check if obfuscapk is available"""
     try:
         result = subprocess.run(
-            ["python3", "-m", "obfuscapk.cli", "-h"],
+            ["python3", "-m", "obfuscapk.cli", "--help"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if result.returncode == 0:
-            return True
+        return "usage" in result.stderr.lower() or "usage" in result.stdout.lower()
     except:
-        pass
-    return False
+        return False
 
 
 def decompile_apk(apk_path, output_dir):
@@ -81,8 +78,6 @@ def decompile_apk(apk_path, output_dir):
 
 
 def obfuscate_apk_with_technique(apk_path, technique, work_dir):
-    """Apply obfuscation technique using obfuscapk CLI"""
-
     obf_class = OBFUSCATION_TECHNIQUES.get(technique, technique)
 
     print(f"     Applying {technique} ({obf_class})...")
@@ -94,8 +89,6 @@ def obfuscate_apk_with_technique(apk_path, technique, work_dir):
         apk_path,
         "-o",
         obf_class,
-        "-w",
-        work_dir,
     ]
 
     try:
@@ -106,24 +99,18 @@ def obfuscate_apk_with_technique(apk_path, technique, work_dir):
             timeout=600,
         )
 
-        if result.returncode == 0:
-            # Find output APK
-            for file in os.listdir(work_dir):
-                if file.endswith(".apk"):
-                    return os.path.join(work_dir, file)
-        else:
-            print(f"     ⚠️ Obfuscation may have failed: {result.stderr[:200]}")
-            # Sometimes output exists even with non-zero return code
-            for file in os.listdir(work_dir):
-                if file.endswith(".apk"):
-                    return os.path.join(work_dir, file)
+        # 🔥 IMPORTANT: DO NOT trust returncode
+        apk = find_apk_anywhere(work_dir)
 
-    except subprocess.TimeoutExpired:
-        print(f"     ⚠️ Obfuscation timeout")
+        if apk:
+            return apk
+
+        apk = find_apk_anywhere(tempfile.gettempdir())
+        return apk
+
     except Exception as e:
         print(f"     ❌ Error: {e}")
-
-    return None
+        return None
 
 
 def extract_mos_set(decompiled_dir):
