@@ -138,7 +138,7 @@ def predict_apk(apk_path):
 # ═══════════════════════════════════════════════
 OBFUSCATION_MAP = {
     "rename": "ClassRename",
-    "reflection": "Reflection",
+    "reflection": "AdvancedReflection",
     "string_encryption": "ConstStringEncryption",
     "goto": "Goto",
     "junk": "Nop",
@@ -162,9 +162,6 @@ def obfuscate_apk(apk_path, mode):
 
     obf_class = OBFUSCATION_MAP[mode]
 
-    work_dir = f"obfus_tmp/{apk_name}_{mode}"
-    os.makedirs(work_dir, exist_ok=True)
-
     cmd = [
         "python3",
         "-m",
@@ -172,21 +169,21 @@ def obfuscate_apk(apk_path, mode):
         apk_path,
         "-o",
         obf_class,
-        "-w",
-        work_dir,
+        "-d",
+        out_apk,  # 🔥 IMPORTANT FIX
     ]
 
     print(f"⚙️ Running {mode} -> {obf_class}")
 
-    subprocess.run(cmd, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
-    # tìm APK output
-    for root, _, files in os.walk(work_dir):
-        for f in files:
-            if f.endswith(".apk"):
-                src = os.path.join(root, f)
-                shutil.copy(src, out_apk)
-                return out_apk
+    if result.returncode != 0:
+        print("❌ Obfuscation failed:")
+        print(result.stderr[-500:])
+        return None
+
+    if os.path.exists(out_apk):
+        return out_apk
 
     print("❌ No obfuscated APK generated")
     return None
