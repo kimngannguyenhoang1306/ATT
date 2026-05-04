@@ -211,11 +211,6 @@ def compare_mos(original_mos, obfuscated_mos):
 # ═══════════════════════════════════════════════
 # MAIN TEST FUNCTION
 # ═══════════════════════════════════════════════
-def log(s):
-    print(s)
-    log_lines.append(s)
-
-
 def test_obfuscation_with_obfuscapk(apk_path):
     """Test obfuscation resilience using obfuscapk CLI tool"""
 
@@ -226,6 +221,10 @@ def test_obfuscation_with_obfuscapk(apk_path):
     result_file = os.path.join(result_dir, f"{apk_name}.txt")
 
     log_lines = []
+
+    def log(s):
+        print(s)
+        log_lines.append(s)
 
     log("\n" + "=" * 70)
     log("MOSDroid Obfuscation Resilience Test (with ObfuscAPK)")
