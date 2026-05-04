@@ -2,6 +2,8 @@
 import os
 import hashlib
 import pickle
+import json
+from collections import Counter
 from tqdm import tqdm
 from config import CAT1_MAPPING, DECOMPILED_DIR, APK_MOS_DIR, MALWARE_DIR, BENIGN_DIR
 
@@ -41,20 +43,23 @@ def _mos_cache_path(decompiled_dir: str) -> str:
     return os.path.join(CACHE_ROOT, f"apk_mos_{key}.pkl")
 
 
-def get_apk_mos_cached(decompiled_dir: str, opcode_mapping: dict, force_refresh: bool = False) -> set:
+def get_apk_mos_cached(
+    decompiled_dir: str, opcode_mapping: dict, force_refresh: bool = False
+) -> list:
     """
     Đọc MOS từ cache nếu có, nếu không thì parse smali files và lưu cache
-    
+
     Args:
         decompiled_dir: đường dẫn thư mục đã decompile
         opcode_mapping: mapping từ opcode → ký hiệu
         force_refresh: nếu True, bỏ qua cache và parse lại
-    
+
     Returns:
-        set của MOS sequences
+        dict của MOS → count (multiset)
+        Ví dụ: {"MIM": 2, "R": 1, "GGP": 3}
     """
     cache_path = _mos_cache_path(decompiled_dir)
-    
+
     # Nếu cache tồn tại và không force_refresh → load cache
     if not force_refresh and os.path.exists(cache_path):
         try:
@@ -62,118 +67,130 @@ def get_apk_mos_cached(decompiled_dir: str, opcode_mapping: dict, force_refresh:
                 return pickle.load(f)
         except Exception:
             pass  # Nếu load lỗi, sẽ parse lại
-    
+
     # Parse smali files
     apk_mos = generate_apk_mos(decompiled_dir, opcode_mapping)
-    
+
     # Lưu cache
     try:
         with open(cache_path, "wb") as f:
             pickle.dump(apk_mos, f, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception:
         pass  # Bỏ qua lỗi save cache
-    
+
     return apk_mos
 
 
 def extract_mos_from_smali_file(smali_path, opcode_mapping):
-    """
-    Đọc 1 file .smali → trả về list MOS
-
-    Cách hoạt động:
-    - Duyệt từng method trong file
-    - Map opcode → ký hiệu (M, R, I, V, G, P)
-    - Gặp V → cắt tạo 1 MOS mới
-    - Kết thúc method → flush đoạn còn lại
-    """
-    mos_list = []
+    mos_per_method = []
 
     try:
         with open(smali_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
     except:
-        return mos_list
+        return mos_per_method
 
     in_method = False
     current_sequence = []
+    current_mos = []
 
     for line in lines:
         line_stripped = line.strip()
 
-        # Bắt đầu method
         if line_stripped.startswith(".method"):
             in_method = True
             current_sequence = []
+            current_mos = []
             continue
 
-        # Kết thúc method → lưu đoạn còn lại
         if line_stripped.startswith(".end method"):
             if current_sequence:
-                mos_list.append("".join(current_sequence))
+                current_mos.append("".join(current_sequence))
+
+            if current_mos:
+                mos_per_method.append(dict(Counter(current_mos)))
+
             in_method = False
             current_sequence = []
+            current_mos = []
             continue
 
         if not in_method:
             continue
 
-        # Lấy opcode
         opcode = extract_opcode_from_line(line_stripped)
         if opcode is None:
             continue
 
-        # Map opcode → ký hiệu
         symbol = opcode_mapping.get(opcode, None)
         if symbol is None:
             continue
 
-        # V = dấu phân cách → cắt tạo MOS mới
         if symbol == "V":
             if current_sequence:
-                mos_list.append("".join(current_sequence))
+                current_mos.append("".join(current_sequence))
                 current_sequence = []
         else:
             current_sequence.append(symbol)
 
-    return mos_list
+    return mos_per_method
 
 
 def generate_apk_mos(decompiled_dir, opcode_mapping):
-    """
-    Duyệt toàn bộ smali files trong 1 APK đã decompile
-    → Trả về set MOS duy nhất của APK đó
-    """
-    all_mos = []
+    all_method_mos = []
 
-    for root, dirs, files in os.walk(decompiled_dir):
+    for root, _, files in os.walk(decompiled_dir):
         for filename in files:
             if filename.endswith(".smali"):
                 smali_path = os.path.join(root, filename)
-                mos = extract_mos_from_smali_file(smali_path, opcode_mapping)
-                all_mos.extend(mos)
+                mos_list = extract_mos_from_smali_file(smali_path, opcode_mapping)
+                all_method_mos.extend(mos_list)
 
-    # Loại MOS rỗng + loại trùng lặp TRONG APK này
-    apk_mos = set(m for m in all_mos if len(m) > 0)
+    # Deduplicate MOS (convert dict → tuple để hash)
+    unique_mos = set()
+
+    for mos in all_method_mos:
+        key = tuple(sorted(mos.items()))
+        unique_mos.add(key)
+
+    # convert lại dict
+    apk_mos = [dict(m) for m in unique_mos]
+
     return apk_mos
 
 
 def process_all_apks():
     """
-    Xử lý toàn bộ APK đã decompile
-    - Tự động gán label từ tên APK gốc trong malware/ và benign/
-    - Lưu MOS ra file: apk_mos/TEN_APK_malware.txt hoặc TEN_APK_benign.txt
+    Xử lý toàn bộ APK đã decompile (MOSDroid Pipeline)
+
+    Logic:
+    1. Lấy danh sách folder từ raw_apk/malware/ và raw_apk/benign/
+    2. Đối chiếu với folder trong raw_apk/decompiled/ để gán label
+    3. Extract MOS từ từng decompiled folder
+    4. Lưu MOS ra file với format: TEN_APK_{label}.txt
     """
     os.makedirs(APK_MOS_DIR, exist_ok=True)
 
-    # Bước 1: Lấy danh sách tên APK gốc để gán label
-    malware_names = set(
-        f.replace(".apk", "") for f in os.listdir(MALWARE_DIR) if f.endswith(".apk")
-    )
-    benign_names = set(
-        f.replace(".apk", "") for f in os.listdir(BENIGN_DIR) if f.endswith(".apk")
-    )
-    print(f"Malware APK gốc : {len(malware_names)}")
-    print(f"Benign APK gốc  : {len(benign_names)}")
+    # Bước 1: Lấy danh sách tên folder từ malware/ và benign/ để xác định label
+    # (lấy folder name, không phải .apk file name)
+    malware_names = set()
+    if os.path.exists(MALWARE_DIR):
+        malware_names = set(
+            d
+            for d in os.listdir(MALWARE_DIR)
+            if os.path.isdir(os.path.join(MALWARE_DIR, d))
+        )
+
+    benign_names = set()
+    if os.path.exists(BENIGN_DIR):
+        benign_names = set(
+            d
+            for d in os.listdir(BENIGN_DIR)
+            if os.path.isdir(os.path.join(BENIGN_DIR, d))
+        )
+
+    print(f"Malware folder : {len(malware_names)}")
+    print(f"Benign folder  : {len(benign_names)}")
 
     # Bước 2: Lấy danh sách folder đã decompile
     apk_dirs = [
@@ -205,20 +222,25 @@ def process_all_apks():
             stats["unknown"] += 1
 
         # Extract MOS (từ cache hoặc parse smali files)
+        # apk_mos: dict {"MIM": 2, "R": 1, ...}
         apk_mos = get_apk_mos_cached(apk_dir, CAT1_MAPPING)
 
         if len(apk_mos) == 0:
             stats["empty"] += 1
 
-        # Lưu file với tên rõ ràng: TEN_APK_label.txt
-        # Ví dụ: 009ab0ff..._malware.txt
-        #        a2dp_Vol_benign.txt
-        output_filename = f"{clean_name}_{label}.txt"
+        # Lưu file với tên rõ ràng: TEN_APK_label.json
+        # Format:
+        # [
+        #   {"MIM": 2, "R": 1},
+        #   {"GGP": 1}
+        # ]
+        # Ví dụ: 009ab0ff..._malware.json
+        #        a2dp_Vol_benign.json
+        output_filename = f"{clean_name}_{label}.json"
         output_path = os.path.join(APK_MOS_DIR, output_filename)
 
         with open(output_path, "w") as f:
-            for mos in sorted(apk_mos):
-                f.write(mos + "\n")
+            json.dump(apk_mos, f, indent=2, ensure_ascii=False)
 
     # Bước 4: In thống kê
     print(f"\n{'='*40}")
@@ -229,12 +251,14 @@ def process_all_apks():
     print(f"  Empty   : {stats['empty']}")
     print(f"  Tổng    : {sum(stats.values()) - stats['empty']}")
     print(f"\nFile MOS đã lưu tại: {APK_MOS_DIR}")
-    print(f"Tên file format: TEN_APK_malware.txt / TEN_APK_benign.txt")
+    print(f"Format: [{{'MOS': count}}, ...] (List of multisets)")
+    print(f"Tên file: TEN_APK_malware.json / TEN_APK_benign.json")
 
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("STEP 2: Extract MOS từ APK đã decompile (với cache)")
+    print("STEP 2: Extract MOS (Multiset) từ APK")
+    print("Format output: JSON {MOS: count}")
     print("=" * 50)
     print(f"📁 Cache root: {os.path.abspath(CACHE_ROOT)}")
     print(f"📁 Decompiled: {os.path.abspath(DECOMPILED_DIR)}")

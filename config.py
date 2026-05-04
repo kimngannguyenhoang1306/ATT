@@ -54,7 +54,8 @@ CAT1_MAPPING = {
     "invoke-polymorphic/range": "V",
     "invoke-custom": "V",
     "invoke-custom/range": "V",
-    "return-void-no-barrier": "V",
+    # R — Return (thêm return-void-no-barrier)
+    "return-void-no-barrier": "R",
     # G — Get/Read (24 opcodes)
     "aget": "G",
     "aget-wide": "G",
