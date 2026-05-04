@@ -1,20 +1,6 @@
 #!/usr/bin/env python3
 """
 STEP 5.1: Obfuscation Resilience Testing with ObfuscAPK CLI Tool
-
-Uses obfuscapk library CLI (if available) to apply 10 obfuscation techniques:
-1. Rename (ClassRename)
-2. Reflection
-3. ConstStringEncryption
-4. Goto
-5. Nop (junk code)
-6. Reorder
-7. DebugRemoval
-8. CallIndirection
-9. MethodRename
-10. FieldRename
-
-Then compares MOS between original and obfuscated APK SMALI.
 """
 
 import os
@@ -22,14 +8,16 @@ import sys
 import subprocess
 import shutil
 import tempfile
-import json
+import pickle
 from pathlib import Path
 
-from config import CAT1_MAPPING, DECOMPILED_DIR
+from config import CAT1_MAPPING, DECOMPILED_DIR, MODELS_DIR
 from step2 import generate_apk_mos
 
+import numpy as np
+
 # ═══════════════════════════════════════════════
-# OBFUSCAPK CLI MAPPING
+# OBFUSCATION TECHNIQUES
 # ═══════════════════════════════════════════════
 
 OBFUSCATION_TECHNIQUES = {
@@ -46,6 +34,11 @@ OBFUSCATION_TECHNIQUES = {
 }
 
 
+# ═══════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════
+
+
 def check_obfuscapk():
     try:
         result = subprocess.run(
@@ -55,14 +48,13 @@ def check_obfuscapk():
             timeout=5,
         )
         return "usage" in result.stderr.lower() or "usage" in result.stdout.lower()
-    except:
+    except Exception:
         return False
 
 
 def decompile_apk(apk_path, output_dir):
     """Decompile APK using apktool"""
     print(f"  🔧 Decompiling {os.path.basename(apk_path)}...")
-
     try:
         subprocess.run(
             ["apktool", "d", apk_path, "-o", output_dir, "-f", "-r"],
@@ -77,20 +69,42 @@ def decompile_apk(apk_path, output_dir):
         return False
 
 
-def obfuscate_apk_with_technique(apk_path, technique, work_dir):
-    obf_class = OBFUSCATION_TECHNIQUES.get(technique, technique)
+def recompile_apk(decompiled_dir, output_apk_path):
+    """Recompile decompiled directory back to APK using apktool"""
+    print(f"  🔨 Recompiling to APK...")
+    try:
+        subprocess.run(
+            ["apktool", "b", decompiled_dir, "-o", output_apk_path, "--use-aapt2"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+            check=True,
+        )
+        return os.path.exists(output_apk_path)
+    except Exception as e:
+        print(f"     ❌ Recompile failed: {e}")
+        return False
 
-    print(f"     Applying {technique} ({obf_class})...")
 
+def obfuscate_apk(apk_path, obf_class, output_dir):
+    """
+    Apply one obfuscation technique via obfuscapk CLI.
+    obfuscapk outputs the obfuscated APK inside output_dir.
+    Returns path to obfuscated APK or None on failure.
+    """
+    print(f"     Applying {obf_class}...")
     cmd = [
         "python3",
         "-m",
         "obfuscapk.cli",
-        apk_path,
         "-o",
         obf_class,
+        "-w",
+        output_dir,  # working directory for temp files
+        "-d",
+        output_dir,  # destination for obfuscated APK
+        apk_path,
     ]
-
     try:
         result = subprocess.run(
             cmd,
@@ -98,27 +112,89 @@ def obfuscate_apk_with_technique(apk_path, technique, work_dir):
             text=True,
             timeout=600,
         )
+        if result.returncode != 0:
+            print(f"     ⚠️  obfuscapk stderr: {result.stderr[-300:]}")
 
-        # 🔥 IMPORTANT: chỉ return smali folder
-        return work_dir
+        # obfuscapk names output as <original_name>_obfuscated.apk
+        base = os.path.splitext(os.path.basename(apk_path))[0]
+        candidate = os.path.join(output_dir, f"{base}_obfuscated.apk")
+        if os.path.exists(candidate):
+            return candidate
+
+        # Fallback: find any .apk in output_dir that is NOT the original
+        for f in os.listdir(output_dir):
+            fp = os.path.join(output_dir, f)
+            if f.endswith(".apk") and fp != apk_path:
+                return fp
+
+        print(f"     ❌ No obfuscated APK found in {output_dir}")
+        return None
 
     except Exception as e:
-        print(f"     ❌ Error: {e}")
+        print(f"     ❌ obfuscapk error: {e}")
         return None
 
 
 def extract_mos_set(decompiled_dir):
+    """Return MOS as a set of canonical strings for set-intersection comparison."""
     mos_list = generate_apk_mos(decompiled_dir, CAT1_MAPPING)
     return set("|".join(f"{k}:{v}" for k, v in sorted(m.items())) for m in mos_list)
 
 
+def build_feature_vector(mos_set, feature_names):
+    """
+    Convert a MOS set into a binary feature vector aligned to feature_names.
+    feature_names is the full list of MOS strings used during training.
+    """
+    mos_index = {name: i for i, name in enumerate(feature_names)}
+    vector = np.zeros(len(feature_names), dtype=np.float32)
+    for mos_str in mos_set:
+        if mos_str in mos_index:
+            vector[mos_index[mos_str]] = 1.0
+    return vector
+
+
+def predict_vector(vector, model_data):
+    """
+    Run inference with the saved model.
+    Returns (pred_label, benign_pct, malware_pct).
+    """
+    model = model_data["model"]
+    model_name = model_data["model_name"]
+    sel_idx = model_data["selected_idx"]
+
+    X = vector[sel_idx].reshape(1, -1)
+
+    if model_name == "DNN":
+        prob_malware = float(model.predict(X, verbose=0).flatten()[0])
+        prob_benign = 1.0 - prob_malware
+        pred = int(prob_malware >= 0.5)
+
+    elif model_name == "RF":
+        proba = model.predict_proba(X)[0]
+        prob_benign = float(proba[0])
+        prob_malware = float(proba[1])
+        pred = int(model.predict(X)[0])
+
+    elif model_name == "SVM":
+        decision = float(model.decision_function(X)[0])
+        # LinearSVC has no probability; use sigmoid approximation
+        prob_malware = float(1 / (1 + np.exp(-decision)))
+        prob_benign = 1.0 - prob_malware
+        pred = int(model.predict(X)[0])
+
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    return pred, prob_benign * 100, prob_malware * 100
+
+
 def compare_mos(original_mos, obfuscated_mos):
-    """Compare MOS sets"""
     kept = original_mos & obfuscated_mos
     lost = original_mos - obfuscated_mos
     new = obfuscated_mos - original_mos
 
-    preservation = len(kept) / len(original_mos) * 100 if original_mos else 0
+    preservation = len(kept) / len(original_mos) * 100 if original_mos else 0.0
 
     return {
         "kept": len(kept),
@@ -141,17 +217,27 @@ def test_obfuscation_with_obfuscapk(apk_path):
     print("=" * 70)
     print(f"\nTesting: {os.path.basename(apk_path)}")
 
-    # Check if obfuscapk available
     if not check_obfuscapk():
         print("⚠️  obfuscapk not available. Install with: pip install obfuscapk")
         print("    Falling back to step5.py (simulated obfuscation)")
         return None
 
+    # Load saved model
+    model_path = os.path.join(MODELS_DIR, "best_model.pkl")
+    if not os.path.exists(model_path):
+        print(f"❌ Model not found at {model_path}. Run step4 first.")
+        return None
+
+    with open(model_path, "rb") as f:
+        model_data = pickle.load(f)
+
+    feature_names = model_data["feature_names"]
+
     results = {}
     temp_base = tempfile.mkdtemp(prefix="mosdroid_obf_")
 
     try:
-        # Step 1: Decompile original APK
+        # ── Step 1: Decompile original APK ──────────────────────────────
         print("\n📦 ORIGINAL APK")
         original_decomp = os.path.join(temp_base, "original")
         os.makedirs(original_decomp, exist_ok=True)
@@ -160,40 +246,71 @@ def test_obfuscation_with_obfuscapk(apk_path):
             print("❌ Failed to decompile original APK")
             return None
 
-        # Extract original MOS
         print("  🔍 Extracting MOS...")
         original_mos = extract_mos_set(original_decomp)
         print(f"     MOS count: {len(original_mos)}")
+
+        orig_vector = build_feature_vector(original_mos, feature_names)
+        orig_pred, orig_benign, orig_malware = predict_vector(orig_vector, model_data)
+
+        print(f"     📊 BENIGN  : {orig_benign:.2f}%")
+        print(f"     📊 MALWARE : {orig_malware:.2f}%")
+        print(f"     {'⚠️  MALWARE' if orig_pred == 1 else '✅ BENIGN'}")
+
         results["original"] = {
             "mos_count": len(original_mos),
             "preservation_rate": 100.0,
+            "pred": orig_pred,
+            "benign": orig_benign,
+            "malware": orig_malware,
         }
 
-        # Step 2: Test each obfuscation technique
+        # ── Step 2: Test each obfuscation technique ──────────────────────
         print("\n📝 OBFUSCATION TESTS")
 
-        for technique in OBFUSCATION_TECHNIQUES.keys():
+        for technique, obf_class in OBFUSCATION_TECHNIQUES.items():
             print(f"\n  [{technique}]")
 
-            # Create working directory
             work_dir = os.path.join(temp_base, f"obf_{technique}")
             os.makedirs(work_dir, exist_ok=True)
 
-            # Apply obfuscation
-            work_dir = obfuscate_apk_with_technique(apk_path, technique, work_dir)
-
-            if not work_dir:
+            # 2a. Apply obfuscation → get obfuscated APK path
+            obf_apk = obfuscate_apk(apk_path, obf_class, work_dir)
+            if not obf_apk:
+                print(f"     ⚠️  Skipping {technique} (obfuscation failed)")
+                results[technique] = None
                 continue
 
-            print(f"     🔍 Extracting MOS from SMALI...")
+            # 2b. Decompile the obfuscated APK
+            obf_decomp = os.path.join(work_dir, "decompiled")
+            if not decompile_apk(obf_apk, obf_decomp):
+                print(
+                    f"     ⚠️  Skipping {technique} (decompile of obfuscated APK failed)"
+                )
+                results[technique] = None
+                continue
 
-            obfuscated_mos = extract_mos_set(work_dir)
-
+            # 2c. Extract MOS from obfuscated SMALI
+            print(f"     🔍 Extracting MOS...")
+            obfuscated_mos = extract_mos_set(obf_decomp)
             print(f"        MOS count: {len(obfuscated_mos)}")
 
-            comparison = compare_mos(original_mos, obfuscated_mos)
+            # 2d. Predict
+            obf_vector = build_feature_vector(obfuscated_mos, feature_names)
+            pred, benign_pct, malware_pct = predict_vector(obf_vector, model_data)
 
-            results[technique] = comparison
+            print(f"     📊 BENIGN  : {benign_pct:.2f}%")
+            print(f"     📊 MALWARE : {malware_pct:.2f}%")
+            print(f"     {'⚠️  MALWARE' if pred == 1 else '✅ BENIGN'}")
+
+            # 2e. MOS comparison
+            comparison = compare_mos(original_mos, obfuscated_mos)
+            results[technique] = {
+                "pred": pred,
+                "benign": benign_pct,
+                "malware": malware_pct,
+                **comparison,
+            }
 
             print(
                 f"     ✓ Kept:  {comparison['kept']:4d} ({comparison['preservation_rate']:6.2f}%)"
@@ -202,40 +319,45 @@ def test_obfuscation_with_obfuscapk(apk_path):
             print(f"     + New:   {comparison['new']:4d}")
 
     finally:
-        # Cleanup
         if os.path.exists(temp_base):
             shutil.rmtree(temp_base)
 
-    # Summary Report
+    # ── Summary Report ───────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("SUMMARY REPORT")
     print("=" * 70)
     print(
-        f"{'Technique':<20} {'MOS Count':>10} {'Kept':>6} {'Lost':>6} {'Preservation':>12}"
+        f"{'Technique':<20} {'MOS Count':>10} {'Kept':>6} {'Lost':>6} "
+        f"{'Preservation':>12} {'Prediction':>12}"
     )
     print("-" * 70)
+
+    orig_count = results["original"]["mos_count"]
+    print(
+        f"{'original':<20} {orig_count:>10} {orig_count:>6} {'0':>6} "
+        f"{'100.00%':>12} "
+        f"{'MALWARE' if results['original']['pred'] == 1 else 'BENIGN':>12}"
+    )
 
     preservation_rates = []
-
-    print(
-        f"{'original':<20} {results['original']['mos_count']:>10} "
-        f"{results['original']['mos_count']:>6} {'0':>6} {'100.00%':>12}"
-    )
-
     for technique, result in results.items():
-        if technique != "original" and result:
-            print(
-                f"{technique:<20} {len(original_mos) + result['new'] - result['lost']:>10} "
-                f"{result['kept']:>6} {result['lost']:>6} {result['preservation_rate']:>11.2f}%"
-            )
-            preservation_rates.append(result["preservation_rate"])
+        if technique == "original" or result is None:
+            continue
+        obf_count = orig_count + result["new"] - result["lost"]
+        print(
+            f"{technique:<20} {obf_count:>10} {result['kept']:>6} {result['lost']:>6} "
+            f"{result['preservation_rate']:>11.2f}% "
+            f"{'MALWARE' if result['pred'] == 1 else 'BENIGN':>12}"
+        )
+        preservation_rates.append(result["preservation_rate"])
 
     avg_rate = (
-        sum(preservation_rates) / len(preservation_rates) if preservation_rates else 0
+        sum(preservation_rates) / len(preservation_rates) if preservation_rates else 0.0
     )
-
     print("-" * 70)
-    print(f"{'Average Preservation':<20} {' '*10} {' '*6} {' '*6} {avg_rate:>11.2f}%")
+    print(
+        f"{'Average Preservation':<20} {' ':>10} {' ':>6} {' ':>6} {avg_rate:>11.2f}%"
+    )
     print("=" * 70)
 
     return results
@@ -263,5 +385,4 @@ if __name__ == "__main__":
         print(f"❌ File must be APK: {apk_path}")
         sys.exit(1)
 
-    # Run test
     test_obfuscation_with_obfuscapk(apk_path)
