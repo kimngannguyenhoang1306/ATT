@@ -50,7 +50,7 @@ def check_obfuscapk():
     """Check if obfuscapk is available"""
     try:
         result = subprocess.run(
-            ["python3", "-m", "obfuscapk.cli", "--version"],
+            ["python3", "-m", "obfuscapk.cli", "-h"],
             capture_output=True,
             text=True,
             timeout=5,
