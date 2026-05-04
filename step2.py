@@ -159,6 +159,33 @@ def generate_apk_mos(decompiled_dir, opcode_mapping):
     return apk_mos
 
 
+def process_single_apk(folder_name, malware_names, benign_names):
+    apk_dir = os.path.join(DECOMPILED_DIR, folder_name)
+    clean_name = folder_name.replace("_smali", "")
+
+    # Gán label
+    if clean_name in malware_names:
+        label = "malware"
+    elif clean_name in benign_names:
+        label = "benign"
+    else:
+        label = "unknown"
+
+    # Extract MOS
+    apk_mos = get_apk_mos_cached(apk_dir, CAT1_MAPPING)
+
+    is_empty = len(apk_mos) == 0
+
+    # Save
+    output_filename = f"{clean_name}_{label}.json"
+    output_path = os.path.join(APK_MOS_DIR, output_filename)
+
+    with open(output_path, "w") as f:
+        json.dump(apk_mos, f, indent=2, ensure_ascii=False)
+
+    return label, is_empty
+
+
 def process_all_apks():
     """
     Xử lý toàn bộ APK đã decompile (MOSDroid Pipeline)
@@ -203,44 +230,25 @@ def process_all_apks():
     # Bước 3: Xử lý từng APK
     stats = {"malware": 0, "benign": 0, "unknown": 0, "empty": 0}
 
-    for folder_name in tqdm(apk_dirs, desc="Extracting MOS"):
-        apk_dir = os.path.join(DECOMPILED_DIR, folder_name)
+    # Số threads (khuyến nghị)
+    num_workers = min(8, os.cpu_count())
 
-        # Gán label dựa vào tên folder
-        # folder_name = "009ab0ff..._smali"
-        # clean_name  = "009ab0ff..."  ← khớp với tên APK gốc
-        clean_name = folder_name.replace("_smali", "")
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [
+            executor.submit(
+                process_single_apk, folder_name, malware_names, benign_names
+            )
+            for folder_name in apk_dirs
+        ]
 
-        if clean_name in malware_names:
-            label = "malware"
-            stats["malware"] += 1
-        elif clean_name in benign_names:
-            label = "benign"
-            stats["benign"] += 1
-        else:
-            label = "unknown"
-            stats["unknown"] += 1
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Extracting MOS"
+        ):
+            label, is_empty = future.result()
 
-        # Extract MOS (từ cache hoặc parse smali files)
-        # apk_mos: dict {"MIM": 2, "R": 1, ...}
-        apk_mos = get_apk_mos_cached(apk_dir, CAT1_MAPPING)
-
-        if len(apk_mos) == 0:
-            stats["empty"] += 1
-
-        # Lưu file với tên rõ ràng: TEN_APK_label.json
-        # Format:
-        # [
-        #   {"MIM": 2, "R": 1},
-        #   {"GGP": 1}
-        # ]
-        # Ví dụ: 009ab0ff..._malware.json
-        #        a2dp_Vol_benign.json
-        output_filename = f"{clean_name}_{label}.json"
-        output_path = os.path.join(APK_MOS_DIR, output_filename)
-
-        with open(output_path, "w") as f:
-            json.dump(apk_mos, f, indent=2, ensure_ascii=False)
+            stats[label] += 1
+            if is_empty:
+                stats["empty"] += 1
 
     # Bước 4: In thống kê
     print(f"\n{'='*40}")
@@ -258,7 +266,7 @@ def process_all_apks():
 if __name__ == "__main__":
     print("=" * 50)
     print("STEP 2: Extract MOS (Multiset) từ APK")
-    print("Format output: JSON {MOS: count}")
+    print("Format output: JSON [ {MOS: count}, ... ]")
     print("=" * 50)
     print(f"📁 Cache root: {os.path.abspath(CACHE_ROOT)}")
     print(f"📁 Decompiled: {os.path.abspath(DECOMPILED_DIR)}")
