@@ -6,6 +6,7 @@ import json
 from collections import Counter
 from tqdm import tqdm
 from config import CAT1_MAPPING, DECOMPILED_DIR, APK_MOS_DIR, MALWARE_DIR, BENIGN_DIR
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Cache configuration
 CACHE_ROOT = "feature_cache"
