@@ -21,16 +21,16 @@ import numpy as np
 # ═══════════════════════════════════════════════
 
 OBFUSCATION_TECHNIQUES = {
-    "rename": "ClassRename",
+    "rebuild": "Rebuild",
+    "field_rename": "FieldRename",
+    "method_rename": "MethodRename",
+    "class_rename": "ClassRename",
+    "method_overload": "MethodOverload",
+    "goto": "Goto",
+    "call_indirect": "CallIndirection",
     "reflection": "Reflection",
     "string_encrypt": "ConstStringEncryption",
-    "goto": "Goto",
-    "junk": "Nop",
     "reorder": "Reorder",
-    "debug_removal": "DebugRemoval",
-    "call_indirect": "CallIndirection",
-    "method_rename": "MethodRename",
-    "field_rename": "FieldRename",
 }
 
 
