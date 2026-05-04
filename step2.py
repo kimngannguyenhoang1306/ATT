@@ -160,18 +160,32 @@ def generate_apk_mos(decompiled_dir, opcode_mapping):
     return apk_mos
 
 
-def process_single_apk(folder_name, malware_names, benign_names):
+def build_label_map():
+    label_map = {}
+
+    # malware
+    if os.path.exists(MALWARE_DIR):
+        for f in os.listdir(MALWARE_DIR):
+            if f.endswith(".apk"):
+                name = os.path.splitext(f)[0]
+                label_map[name] = "malware"
+
+    # benign
+    if os.path.exists(BENIGN_DIR):
+        for f in os.listdir(BENIGN_DIR):
+            if f.endswith(".apk"):
+                name = os.path.splitext(f)[0]
+                label_map[name] = "benign"
+
+    return label_map
+
+
+def process_single_apk(folder_name, label_map):
     apk_dir = os.path.join(DECOMPILED_DIR, folder_name)
     clean_name = folder_name.replace("_smali", "")
+    clean_name = os.path.splitext(clean_name)[0]  # 🔥 THÊM DÒNG NÀY
 
-    # Gán label
-    if clean_name in malware_names:
-        label = "malware"
-    elif clean_name in benign_names:
-        label = "benign"
-    else:
-        label = "unknown"
-
+    label = label_map.get(clean_name, "unknown")
     # Extract MOS
     apk_mos = get_apk_mos_cached(apk_dir, CAT1_MAPPING)
 
@@ -199,27 +213,6 @@ def process_all_apks():
     """
     os.makedirs(APK_MOS_DIR, exist_ok=True)
 
-    # Bước 1: Lấy danh sách tên folder từ malware/ và benign/ để xác định label
-    # (lấy folder name, không phải .apk file name)
-    malware_names = set()
-    if os.path.exists(MALWARE_DIR):
-        malware_names = set(
-            d
-            for d in os.listdir(MALWARE_DIR)
-            if os.path.isdir(os.path.join(MALWARE_DIR, d))
-        )
-
-    benign_names = set()
-    if os.path.exists(BENIGN_DIR):
-        benign_names = set(
-            d
-            for d in os.listdir(BENIGN_DIR)
-            if os.path.isdir(os.path.join(BENIGN_DIR, d))
-        )
-
-    print(f"Malware folder : {len(malware_names)}")
-    print(f"Benign folder  : {len(benign_names)}")
-
     # Bước 2: Lấy danh sách folder đã decompile
     apk_dirs = [
         d
@@ -234,11 +227,13 @@ def process_all_apks():
     # Số threads (khuyến nghị)
     num_workers = min(8, os.cpu_count())
 
+    label_map = build_label_map()
+
+    print(f"Total labeled APKs: {len(label_map)}")
+
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = [
-            executor.submit(
-                process_single_apk, folder_name, malware_names, benign_names
-            )
+            executor.submit(process_single_apk, folder_name, label_map)
             for folder_name in apk_dirs
         ]
 
