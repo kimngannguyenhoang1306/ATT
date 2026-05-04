@@ -86,25 +86,27 @@ def recompile_apk(decompiled_dir, output_apk_path):
         return False
 
 
-def obfuscate_apk(apk_path, obf_class, output_dir):
+def obfuscate_apk(apk_path, obf_class, work_dir):
     """
-    Apply one obfuscation technique via obfuscapk CLI.
-    obfuscapk outputs the obfuscated APK inside output_dir.
-    Returns path to obfuscated APK or None on failure.
+    obfuscapk outputs <name>_obfuscated.apk in the SAME directory as input APK.
+    So we copy the APK into work_dir first, then run obfuscapk there.
     """
     print(f"     Applying {obf_class}...")
+
+    # Copy APK vào work_dir để obfuscapk output vào đó
+    apk_filename = os.path.basename(apk_path)
+    local_apk = os.path.join(work_dir, apk_filename)
+    shutil.copy2(apk_path, local_apk)
+
     cmd = [
         "python3",
         "-m",
         "obfuscapk.cli",
         "-o",
         obf_class,
-        "-w",
-        output_dir,  # working directory for temp files
-        "-d",
-        output_dir,  # destination for obfuscated APK
-        apk_path,
+        local_apk,
     ]
+
     try:
         result = subprocess.run(
             cmd,
@@ -112,22 +114,25 @@ def obfuscate_apk(apk_path, obf_class, output_dir):
             text=True,
             timeout=600,
         )
-        if result.returncode != 0:
-            print(f"     ⚠️  obfuscapk stderr: {result.stderr[-300:]}")
 
-        # obfuscapk names output as <original_name>_obfuscated.apk
-        base = os.path.splitext(os.path.basename(apk_path))[0]
-        candidate = os.path.join(output_dir, f"{base}_obfuscated.apk")
+        if result.returncode != 0:
+            print(f"     ⚠️  stderr: {result.stderr[-300:]}")
+
+        # obfuscapk đặt tên: <original_stem>_obfuscated.apk
+        base = os.path.splitext(apk_filename)[0]
+        candidate = os.path.join(work_dir, f"{base}_obfuscated.apk")
         if os.path.exists(candidate):
             return candidate
 
-        # Fallback: find any .apk in output_dir that is NOT the original
-        for f in os.listdir(output_dir):
-            fp = os.path.join(output_dir, f)
-            if f.endswith(".apk") and fp != apk_path:
+        # Fallback: tìm bất kỳ .apk nào khác trong work_dir
+        for f in os.listdir(work_dir):
+            fp = os.path.join(work_dir, f)
+            if f.endswith(".apk") and fp != local_apk:
                 return fp
 
-        print(f"     ❌ No obfuscated APK found in {output_dir}")
+        print(f"     ❌ No obfuscated APK found in {work_dir}")
+        print(f"     stdout: {result.stdout[-200:]}")
+        print(f"     stderr: {result.stderr[-200:]}")
         return None
 
     except Exception as e:
