@@ -1,5 +1,5 @@
 """
-STEP 5: Predict APK + (Optional) Obfuscation Testing (FIXED VERSION)
+STEP 5: Predict APK + Obfuscation Testing (FIXED CLEAN VERSION)
 """
 
 import os
@@ -14,14 +14,14 @@ from step2 import generate_apk_mos
 
 
 # ═══════════════════════════════════════════════
-# UTIL: MOS dict → string
+# MOS utils
 # ═══════════════════════════════════════════════
 def mos_dict_to_str(mos_dict):
     return "|".join(f"{k}:{v}" for k, v in sorted(mos_dict.items()))
 
 
 # ═══════════════════════════════════════════════
-# STEP 1: DECOMPILE APK
+# DECOMPILE APK
 # ═══════════════════════════════════════════════
 def decompile_apk(apk_path):
     apk_name = os.path.basename(apk_path).replace(".apk", "")
@@ -35,21 +35,18 @@ def decompile_apk(apk_path):
 
     cmd = ["apktool", "d", apk_path, "-o", output_dir, "--no-res", "-f"]
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        print("❌ Decompile timeout!")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print("❌ Decompile failed:")
+        print(result.stderr[-300:])
         return None
 
-    if result.returncode == 0:
-        return output_dir
-    else:
-        print(f"❌ Lỗi decompile: {result.stderr[:200]}")
-        return None
+    return output_dir
 
 
 # ═══════════════════════════════════════════════
-# STEP 2: EXTRACT MOS
+# EXTRACT MOS
 # ═══════════════════════════════════════════════
 def extract_mos_set(decomp_dir):
     apk_mos_list = generate_apk_mos(decomp_dir, CAT1_MAPPING)
@@ -57,7 +54,7 @@ def extract_mos_set(decomp_dir):
 
 
 # ═══════════════════════════════════════════════
-# STEP 3: VECTORIZE
+# VECTORIZE
 # ═══════════════════════════════════════════════
 def build_feature_vector(apk_mos_set, feature_names):
     return np.array(
@@ -67,41 +64,36 @@ def build_feature_vector(apk_mos_set, feature_names):
 
 
 # ═══════════════════════════════════════════════
-# STEP 4: PREDICT VECTOR
+# PREDICT
 # ═══════════════════════════════════════════════
 def predict_vector(vector, model_data):
     model = model_data["model"]
     selected_idx = model_data["selected_idx"]
 
-    vector_sel = vector[selected_idx].reshape(1, -1)
+    v = vector[selected_idx].reshape(1, -1)
 
     if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(vector_sel)[0]
-        pred = model.predict(vector_sel)[0]
+        probs = model.predict_proba(v)[0]
+        pred = model.predict(v)[0]
 
-        prob_benign = probs[0] * 100
-        prob_malware = probs[1] * 100
-    else:
-        prob = model.predict(vector_sel, verbose=0)[0][0]
-        prob_malware = prob * 100
-        prob_benign = 100 - prob_malware
-        pred = 1 if prob >= 0.5 else 0
+        return pred, probs[0] * 100, probs[1] * 100
 
-    return pred, prob_benign, prob_malware
+    prob = model.predict(v, verbose=0)[0][0]
+    return (1 if prob >= 0.5 else 0), (1 - prob) * 100, prob * 100
 
 
 # ═══════════════════════════════════════════════
-# STEP 5: PREDICT APK (GỐC)
+# MAIN PREDICT (GỐC APK)
 # ═══════════════════════════════════════════════
 def predict_apk(apk_path):
     print(f"\n{'='*50}")
     print(f"📱 APK: {os.path.basename(apk_path)}")
     print(f"{'='*50}")
 
-    # Load model
     model_path = os.path.join(MODELS_DIR, "best_model.pkl")
+
     if not os.path.exists(model_path):
-        print("❌ Chưa train model!")
+        print("❌ Missing model")
         return
 
     with open(model_path, "rb") as f:
@@ -109,24 +101,20 @@ def predict_apk(apk_path):
 
     feature_names = model_data["feature_names"]
 
-    # ✔ decompile APK GỐC
     decomp_dir = decompile_apk(apk_path)
-    if decomp_dir is None:
+    if not decomp_dir:
         return
 
-    # ✔ extract MOS
-    apk_mos_set = extract_mos_set(decomp_dir)
-    print(f"🔍 MOS count: {len(apk_mos_set)}")
+    mos_set = extract_mos_set(decomp_dir)
+    print(f"🔍 MOS count: {len(mos_set)}")
 
-    # ✔ vectorize
-    vector = build_feature_vector(apk_mos_set, feature_names)
+    vector = build_feature_vector(mos_set, feature_names)
 
-    # ✔ predict
-    pred, prob_benign, prob_malware = predict_vector(vector, model_data)
+    pred, benign, malware = predict_vector(vector, model_data)
 
-    print(f"\n📊 KẾT QUẢ:")
-    print(f"  BENIGN  : {prob_benign:.2f}%")
-    print(f"  MALWARE : {prob_malware:.2f}%")
+    print("\n📊 RESULT:")
+    print(f"  BENIGN  : {benign:.2f}%")
+    print(f"  MALWARE : {malware:.2f}%")
 
     print("\n⚠️ MALWARE" if pred == 1 else "\n✅ BENIGN")
 
@@ -134,11 +122,11 @@ def predict_apk(apk_path):
 
 
 # ═══════════════════════════════════════════════
-# OBFUSCATION MAP
+# OBFUSCATION MAP (REAL CLI NAMES)
 # ═══════════════════════════════════════════════
 OBFUSCATION_MAP = {
     "rename": "ClassRename",
-    "reflection": "AdvancedReflection",
+    "reflection": "Reflection",
     "string_encryption": "ConstStringEncryption",
     "goto": "Goto",
     "junk": "Nop",
@@ -151,16 +139,17 @@ OBFUSCATION_MAP = {
 
 
 # ═══════════════════════════════════════════════
-# OBFUSCATE APK (FIXED)
+# OBFUSCATE APK (FIXED PROPER WAY)
 # ═══════════════════════════════════════════════
 def obfuscate_apk(apk_path, mode):
-    out_dir = "obfuscated_apks"
-    os.makedirs(out_dir, exist_ok=True)
-
     apk_name = os.path.basename(apk_path).replace(".apk", "")
-    out_apk = os.path.join(out_dir, f"{apk_name}_{mode}.apk")
+    work_dir = f"obfus_tmp/{apk_name}_{mode}"
+
+    os.makedirs(work_dir, exist_ok=True)
 
     obf_class = OBFUSCATION_MAP[mode]
+
+    print(f"⚙️ {mode} -> {obf_class}")
 
     cmd = [
         "python3",
@@ -170,51 +159,58 @@ def obfuscate_apk(apk_path, mode):
         "-o",
         obf_class,
         "-d",
-        out_apk,  # 🔥 IMPORTANT FIX
+        work_dir,  # ✅ DIRECTORY ONLY
     ]
-
-    print(f"⚙️ Running {mode} -> {obf_class}")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         print("❌ Obfuscation failed:")
-        print(result.stderr[-500:])
+        print(result.stderr[-400:])
         return None
 
-    if os.path.exists(out_apk):
-        return out_apk
+    # 🔥 SEARCH OUTPUT APK (IMPORTANT FIX)
+    for root, _, files in os.walk(work_dir):
+        for f in files:
+            if f.endswith(".apk"):
+                out_path = os.path.join(root, f)
 
-    print("❌ No obfuscated APK generated")
+                final_path = f"obfuscated_apks/{apk_name}_{mode}.apk"
+                os.makedirs("obfuscated_apks", exist_ok=True)
+
+                shutil.copy(out_path, final_path)
+
+                print(f"✅ APK GENERATED: {final_path}")
+                return final_path
+
+    print("❌ NO APK FOUND (only smali modified)")
     return None
 
 
 # ═══════════════════════════════════════════════
-# OBFUSCATION EVALUATION
+# EVALUATION
 # ═══════════════════════════════════════════════
 def evaluate_obfuscation(apk_path):
-    print("\n🔬 TEST OBFUSCATION")
+    print("\n🔬 OBFUSCATION TEST")
 
     results = []
 
-    # original
     print("\n[ORIGINAL]")
-    pred = predict_apk(apk_path)
-    results.append(("original", pred))
+    results.append(("original", predict_apk(apk_path)))
 
-    for mode in OBFUSCATION_MAP.keys():
-        print(f"\n[{mode.upper()}]")
+    for mode in OBFUSCATION_MAP:
+        print(f"\n[{mode}]")
 
         obf_apk = obfuscate_apk(apk_path, mode)
-        if obf_apk is None:
+
+        if not obf_apk:
             continue
 
-        pred = predict_apk(obf_apk)
-        results.append((mode, pred))
+        results.append((mode, predict_apk(obf_apk)))
 
-    print("\n📊 SUMMARY:")
-    for mode, pred in results:
-        print(f"{mode:20s}: {'MALWARE' if pred else 'BENIGN'}")
+    print("\n📊 SUMMARY")
+    for m, r in results:
+        print(f"{m:20s}: {'MALWARE' if r else 'BENIGN'}")
 
     return results
 
@@ -224,18 +220,12 @@ def evaluate_obfuscation(apk_path):
 # ═══════════════════════════════════════════════
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python3 predict.py app.apk")
-        print("  python3 predict.py app.apk --obf")
+        print("python3 predict.py app.apk [--obf]")
         sys.exit(1)
 
-    apk_path = sys.argv[1]
-
-    if not os.path.exists(apk_path):
-        print("❌ File không tồn tại")
-        sys.exit(1)
+    apk = sys.argv[1]
 
     if len(sys.argv) > 2 and sys.argv[2] == "--obf":
-        evaluate_obfuscation(apk_path)
+        evaluate_obfuscation(apk)
     else:
-        predict_apk(apk_path)
+        predict_apk(apk)
