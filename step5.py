@@ -148,16 +148,16 @@ def predict_apk(apk_path):
 # ═══════════════════════════════════════════════
 
 OBFUSCATION_MAP = {
-    "rename": "RenameClasses",
+    "rename": "ClassRename",
     "reflection": "Reflection",
-    "string_encryption": "StringEncryption",
+    "string_encryption": "ConstStringEncryption",
     "goto": "Goto",
-    "junk": "AddJunkCode",
-    "reorder": "ReorderCode",
+    "junk": "Nop",
+    "reorder": "Reorder",
     "debug_removal": "DebugRemoval",
-    "call_indirection": "MethodCallIndirection",
-    "method_rename": "RenameMethods",
-    "field_rename": "RenameFields",
+    "call_indirection": "CallIndirection",
+    "method_rename": "MethodRename",
+    "field_rename": "FieldRename",
 }
 
 
