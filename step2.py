@@ -1,7 +1,13 @@
-# step2_extract_mos.py
+# step2.py
 import os
+import hashlib
+import pickle
 from tqdm import tqdm
 from config import CAT1_MAPPING, DECOMPILED_DIR, APK_MOS_DIR, MALWARE_DIR, BENIGN_DIR
+
+# Cache configuration
+CACHE_ROOT = "feature_cache"
+os.makedirs(CACHE_ROOT, exist_ok=True)
 
 
 def extract_opcode_from_line(line):
@@ -24,6 +30,50 @@ def extract_opcode_from_line(line):
     if parts:
         return parts[0].lower()
     return None
+
+
+# =========================
+# CACHE LAYER (tương tự train.py)
+# =========================
+def _mos_cache_path(decompiled_dir: str) -> str:
+    """Tạo đường dẫn cache dựa trên MD5 hash của directory"""
+    key = hashlib.md5(decompiled_dir.encode()).hexdigest()
+    return os.path.join(CACHE_ROOT, f"apk_mos_{key}.pkl")
+
+
+def get_apk_mos_cached(decompiled_dir: str, opcode_mapping: dict, force_refresh: bool = False) -> set:
+    """
+    Đọc MOS từ cache nếu có, nếu không thì parse smali files và lưu cache
+    
+    Args:
+        decompiled_dir: đường dẫn thư mục đã decompile
+        opcode_mapping: mapping từ opcode → ký hiệu
+        force_refresh: nếu True, bỏ qua cache và parse lại
+    
+    Returns:
+        set của MOS sequences
+    """
+    cache_path = _mos_cache_path(decompiled_dir)
+    
+    # Nếu cache tồn tại và không force_refresh → load cache
+    if not force_refresh and os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass  # Nếu load lỗi, sẽ parse lại
+    
+    # Parse smali files
+    apk_mos = generate_apk_mos(decompiled_dir, opcode_mapping)
+    
+    # Lưu cache
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(apk_mos, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass  # Bỏ qua lỗi save cache
+    
+    return apk_mos
 
 
 def extract_mos_from_smali_file(smali_path, opcode_mapping):
@@ -154,8 +204,8 @@ def process_all_apks():
             label = "unknown"
             stats["unknown"] += 1
 
-        # Extract MOS
-        apk_mos = generate_apk_mos(apk_dir, CAT1_MAPPING)
+        # Extract MOS (từ cache hoặc parse smali files)
+        apk_mos = get_apk_mos_cached(apk_dir, CAT1_MAPPING)
 
         if len(apk_mos) == 0:
             stats["empty"] += 1
@@ -183,7 +233,11 @@ def process_all_apks():
 
 
 if __name__ == "__main__":
-    print("=" * 40)
-    print("STEP 2: Extract MOS từ APK đã decompile")
-    print("=" * 40 + "\n")
+    print("=" * 50)
+    print("STEP 2: Extract MOS từ APK đã decompile (với cache)")
+    print("=" * 50)
+    print(f"📁 Cache root: {os.path.abspath(CACHE_ROOT)}")
+    print(f"📁 Decompiled: {os.path.abspath(DECOMPILED_DIR)}")
+    print(f"💾 Output: {os.path.abspath(APK_MOS_DIR)}")
+    print("=" * 50 + "\n")
     process_all_apks()
