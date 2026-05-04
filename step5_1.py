@@ -50,7 +50,7 @@ def check_obfuscapk():
     """Check if obfuscapk is available"""
     try:
         result = subprocess.run(
-            ["python", "-m", "obfuscapk.cli", "--version"],
+            ["python3", "-m", "obfuscapk.cli", "--version"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -88,7 +88,7 @@ def obfuscate_apk_with_technique(apk_path, technique, work_dir):
     print(f"     Applying {technique} ({obf_class})...")
 
     cmd = [
-        "python",
+        "python3",
         "-m",
         "obfuscapk.cli",
         apk_path,
