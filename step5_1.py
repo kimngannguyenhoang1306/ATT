@@ -88,15 +88,10 @@ def recompile_apk(decompiled_dir, output_apk_path):
 
 def obfuscate_apk(apk_path, obf_class, work_dir):
     """
-    obfuscapk outputs <name>_obfuscated.apk in the SAME directory as input APK.
-    So we copy the APK into work_dir first, then run obfuscapk there.
+    obfuscapk tự decompile APK vào work_dir/<apk_stem>/<apk_stem>/smali/
+    Trả về đường dẫn smali folder đó.
     """
     print(f"     Applying {obf_class}...")
-
-    # Copy APK vào work_dir để obfuscapk output vào đó
-    apk_filename = os.path.basename(apk_path)
-    local_apk = os.path.join(work_dir, apk_filename)
-    shutil.copy2(apk_path, local_apk)
 
     cmd = [
         "python3",
@@ -104,7 +99,9 @@ def obfuscate_apk(apk_path, obf_class, work_dir):
         "obfuscapk.cli",
         "-o",
         obf_class,
-        local_apk,
+        "-w",
+        work_dir,
+        apk_path,
     ]
 
     try:
@@ -118,19 +115,21 @@ def obfuscate_apk(apk_path, obf_class, work_dir):
         if result.returncode != 0:
             print(f"     ⚠️  stderr: {result.stderr[-300:]}")
 
-        # obfuscapk đặt tên: <original_stem>_obfuscated.apk
-        base = os.path.splitext(apk_filename)[0]
-        candidate = os.path.join(work_dir, f"{base}_obfuscated.apk")
-        if os.path.exists(candidate):
-            return candidate
+        # Cấu trúc: work_dir/<apk_stem>/smali/
+        apk_stem = os.path.splitext(os.path.basename(apk_path))[0]
+        smali_dir = os.path.join(work_dir, apk_stem, "smali")
 
-        # Fallback: tìm bất kỳ .apk nào khác trong work_dir
-        for f in os.listdir(work_dir):
-            fp = os.path.join(work_dir, f)
-            if f.endswith(".apk") and fp != local_apk:
-                return fp
+        if os.path.isdir(smali_dir):
+            return smali_dir
 
-        print(f"     ❌ No obfuscated APK found in {work_dir}")
+        # Fallback: tìm bất kỳ smali/ folder nào trong work_dir
+        for root, dirs, _ in os.walk(work_dir):
+            if "smali" in dirs:
+                candidate = os.path.join(root, "smali")
+                print(f"     📁 Found smali at: {candidate}")
+                return candidate
+
+        print(f"     ❌ No smali dir found in {work_dir}")
         print(f"     stdout: {result.stdout[-200:]}")
         print(f"     stderr: {result.stderr[-200:]}")
         return None
@@ -279,28 +278,19 @@ def test_obfuscation_with_obfuscapk(apk_path):
             work_dir = os.path.join(temp_base, f"obf_{technique}")
             os.makedirs(work_dir, exist_ok=True)
 
-            # 2a. Apply obfuscation → get obfuscated APK path
-            obf_apk = obfuscate_apk(apk_path, obf_class, work_dir)
-            if not obf_apk:
-                print(f"     ⚠️  Skipping {technique} (obfuscation failed)")
+            # obfuscapk tự decompile → trả về smali dir luôn
+            smali_dir = obfuscate_apk(apk_path, obf_class, work_dir)
+            if not smali_dir:
+                print(f"     ⚠️  Skipping {technique}")
                 results[technique] = None
                 continue
 
-            # 2b. Decompile the obfuscated APK
-            obf_decomp = os.path.join(work_dir, "decompiled")
-            if not decompile_apk(obf_apk, obf_decomp):
-                print(
-                    f"     ⚠️  Skipping {technique} (decompile of obfuscated APK failed)"
-                )
-                results[technique] = None
-                continue
-
-            # 2c. Extract MOS from obfuscated SMALI
-            print(f"     🔍 Extracting MOS...")
-            obfuscated_mos = extract_mos_set(obf_decomp)
+            # Extract MOS thẳng từ smali
+            print(f"     🔍 Extracting MOS from smali...")
+            obfuscated_mos = extract_mos_set(smali_dir)
             print(f"        MOS count: {len(obfuscated_mos)}")
 
-            # 2d. Predict
+            # Predict
             obf_vector = build_feature_vector(obfuscated_mos, feature_names)
             pred, benign_pct, malware_pct = predict_vector(obf_vector, model_data)
 
@@ -308,7 +298,6 @@ def test_obfuscation_with_obfuscapk(apk_path):
             print(f"     📊 MALWARE : {malware_pct:.2f}%")
             print(f"     {'⚠️  MALWARE' if pred == 1 else '✅ BENIGN'}")
 
-            # 2e. MOS comparison
             comparison = compare_mos(original_mos, obfuscated_mos)
             results[technique] = {
                 "pred": pred,
