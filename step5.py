@@ -9,7 +9,7 @@ import subprocess
 import numpy as np
 
 from config import CAT1_MAPPING, DECOMPILED_DIR, MODELS_DIR
-from step2_extract_mos import generate_apk_mos
+from step2 import generate_apk_mos
 
 
 # ═══════════════════════════════════════════════
