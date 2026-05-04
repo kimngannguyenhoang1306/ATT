@@ -1,5 +1,5 @@
 """
-STEP 5: Predict APK + (Optional) Obfuscation Testing
+STEP 5: Predict APK + (Optional) Obfuscation Testing (FIXED VERSION)
 """
 
 import os
@@ -7,20 +7,21 @@ import sys
 import pickle
 import subprocess
 import numpy as np
+import shutil
 
 from config import CAT1_MAPPING, DECOMPILED_DIR, MODELS_DIR
 from step2 import generate_apk_mos
 
 
 # ═══════════════════════════════════════════════
-# UTIL: MOS dict → string (QUAN TRỌNG)
+# UTIL: MOS dict → string
 # ═══════════════════════════════════════════════
 def mos_dict_to_str(mos_dict):
     return "|".join(f"{k}:{v}" for k, v in sorted(mos_dict.items()))
 
 
 # ═══════════════════════════════════════════════
-# STEP 1: DECOMPILE
+# STEP 1: DECOMPILE APK
 # ═══════════════════════════════════════════════
 def decompile_apk(apk_path):
     apk_name = os.path.basename(apk_path).replace(".apk", "")
@@ -48,30 +49,25 @@ def decompile_apk(apk_path):
 
 
 # ═══════════════════════════════════════════════
-# STEP 2: EXTRACT MOS + CONVERT
+# STEP 2: EXTRACT MOS
 # ═══════════════════════════════════════════════
 def extract_mos_set(decomp_dir):
     apk_mos_list = generate_apk_mos(decomp_dir, CAT1_MAPPING)
-
-    # 🔥 FIX QUAN TRỌNG
-    apk_mos_set = set(mos_dict_to_str(m) for m in apk_mos_list)
-
-    return apk_mos_set
+    return set(mos_dict_to_str(m) for m in apk_mos_list)
 
 
 # ═══════════════════════════════════════════════
 # STEP 3: VECTORIZE
 # ═══════════════════════════════════════════════
 def build_feature_vector(apk_mos_set, feature_names):
-    vector = np.array(
+    return np.array(
         [1 if mos in apk_mos_set else 0 for mos in feature_names],
         dtype=np.float32,
     )
-    return vector
 
 
 # ═══════════════════════════════════════════════
-# STEP 4: PREDICT
+# STEP 4: PREDICT VECTOR
 # ═══════════════════════════════════════════════
 def predict_vector(vector, model_data):
     model = model_data["model"]
@@ -79,16 +75,13 @@ def predict_vector(vector, model_data):
 
     vector_sel = vector[selected_idx].reshape(1, -1)
 
-    # SKLEARN
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(vector_sel)[0]
         pred = model.predict(vector_sel)[0]
 
         prob_benign = probs[0] * 100
         prob_malware = probs[1] * 100
-
     else:
-        # DNN
         prob = model.predict(vector_sel, verbose=0)[0][0]
         prob_malware = prob * 100
         prob_benign = 100 - prob_malware
@@ -98,7 +91,7 @@ def predict_vector(vector, model_data):
 
 
 # ═══════════════════════════════════════════════
-# MAIN PREDICT
+# STEP 5: PREDICT APK (GỐC)
 # ═══════════════════════════════════════════════
 def predict_apk(apk_path):
     print(f"\n{'='*50}")
@@ -116,37 +109,33 @@ def predict_apk(apk_path):
 
     feature_names = model_data["feature_names"]
 
-    # Decompile
+    # ✔ decompile APK GỐC
     decomp_dir = decompile_apk(apk_path)
     if decomp_dir is None:
         return
 
-    # Extract MOS
+    # ✔ extract MOS
     apk_mos_set = extract_mos_set(decomp_dir)
     print(f"🔍 MOS count: {len(apk_mos_set)}")
 
-    # Vectorize
+    # ✔ vectorize
     vector = build_feature_vector(apk_mos_set, feature_names)
 
-    # Predict
+    # ✔ predict
     pred, prob_benign, prob_malware = predict_vector(vector, model_data)
 
     print(f"\n📊 KẾT QUẢ:")
     print(f"  BENIGN  : {prob_benign:.2f}%")
     print(f"  MALWARE : {prob_malware:.2f}%")
 
-    if pred == 1:
-        print("\n⚠️  MALWARE")
-    else:
-        print("\n✅ BENIGN")
+    print("\n⚠️ MALWARE" if pred == 1 else "\n✅ BENIGN")
 
     return pred
 
 
 # ═══════════════════════════════════════════════
-# OPTIONAL: OBFUSCATION TEST (THEO PAPER)
+# OBFUSCATION MAP
 # ═══════════════════════════════════════════════
-
 OBFUSCATION_MAP = {
     "rename": "ClassRename",
     "reflection": "Reflection",
@@ -161,6 +150,9 @@ OBFUSCATION_MAP = {
 }
 
 
+# ═══════════════════════════════════════════════
+# OBFUSCATE APK (FIXED)
+# ═══════════════════════════════════════════════
 def obfuscate_apk(apk_path, mode):
     out_dir = "obfuscated_apks"
     os.makedirs(out_dir, exist_ok=True)
@@ -168,27 +160,47 @@ def obfuscate_apk(apk_path, mode):
     apk_name = os.path.basename(apk_path).replace(".apk", "")
     out_apk = os.path.join(out_dir, f"{apk_name}_{mode}.apk")
 
-    obf_class = OBFUSCATION_MAP.get(mode)
-    if obf_class is None:
-        print(f"❌ Unknown mode: {mode}")
-        return None
+    obf_class = OBFUSCATION_MAP[mode]
 
-    cmd = ["python3", "-m", "obfuscapk.cli", "-o", obf_class, apk_path]
+    work_dir = f"obfus_tmp/{apk_name}_{mode}"
+    os.makedirs(work_dir, exist_ok=True)
 
-    try:
-        print(f"⚙️ Running: {mode} -> {obf_class}")
-        subprocess.run(cmd, timeout=600)
-        return apk_path  # Obfuscapk overwrite/workdir output
-    except Exception as e:
-        print(f"❌ Obfuscate fail {mode}: {e}")
-        return None
+    cmd = [
+        "python3",
+        "-m",
+        "obfuscapk.cli",
+        apk_path,
+        "-o",
+        obf_class,
+        "-w",
+        work_dir,
+    ]
+
+    print(f"⚙️ Running {mode} -> {obf_class}")
+
+    subprocess.run(cmd, timeout=600)
+
+    # tìm APK output
+    for root, _, files in os.walk(work_dir):
+        for f in files:
+            if f.endswith(".apk"):
+                src = os.path.join(root, f)
+                shutil.copy(src, out_apk)
+                return out_apk
+
+    print("❌ No obfuscated APK generated")
+    return None
 
 
+# ═══════════════════════════════════════════════
+# OBFUSCATION EVALUATION
+# ═══════════════════════════════════════════════
 def evaluate_obfuscation(apk_path):
     print("\n🔬 TEST OBFUSCATION")
 
     results = []
 
+    # original
     print("\n[ORIGINAL]")
     pred = predict_apk(apk_path)
     results.append(("original", pred))
