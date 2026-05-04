@@ -9,6 +9,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix
 from tensorflow import keras
 from config import FEATURES_DIR, MODELS_DIR, K_BEST, RF_CONFIG, SVM_CONFIG
+import matplotlib.pyplot as plt
 
 
 # ═══════════════════════════════════════════════
@@ -270,6 +271,59 @@ def save_final_model(X, y, feature_names, best_model_name):
     print(f"  Dùng predict.py để test APK mới!")
 
 
+def save_metrics_fig(all_results):
+    models = ["SVM", "RF", "DNN"]
+
+    accs, f1s, aucs, fprs = [], [], [], []
+
+    for m in models:
+        r = all_results[m]
+        accs.append(np.mean([x["accuracy"] for x in r]))
+        f1s.append(np.mean([x["f1"] for x in r]))
+        aucs.append(np.mean([x["auc"] for x in r]))
+        fprs.append(np.mean([x["fpr"] for x in r]))
+
+    x = np.arange(len(models))
+
+    # Accuracy
+    plt.figure()
+    plt.bar(x, accs)
+    plt.xticks(x, models)
+    plt.ylabel("Accuracy")
+    plt.title("Model Accuracy")
+    plt.savefig(os.path.join(FIG_DIR, "accuracy.png"))
+    plt.close()
+
+    # F1
+    plt.figure()
+    plt.bar(x, f1s)
+    plt.xticks(x, models)
+    plt.ylabel("F1 Score")
+    plt.title("Model F1 Score")
+    plt.savefig(os.path.join(FIG_DIR, "f1.png"))
+    plt.close()
+
+    # AUC
+    plt.figure()
+    plt.bar(x, aucs)
+    plt.xticks(x, models)
+    plt.ylabel("AUC")
+    plt.title("Model AUC")
+    plt.savefig(os.path.join(FIG_DIR, "auc.png"))
+    plt.close()
+
+    # FPR
+    plt.figure()
+    plt.bar(x, fprs)
+    plt.xticks(x, models)
+    plt.ylabel("FPR")
+    plt.title("Model False Positive Rate")
+    plt.savefig(os.path.join(FIG_DIR, "fpr.png"))
+    plt.close()
+
+    print(f"📊 Saved figures to: {FIG_DIR}/")
+
+
 # ═══════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════
@@ -277,6 +331,9 @@ if __name__ == "__main__":
     print("=" * 45)
     print("STEP 4: Train & Evaluate Models")
     print("=" * 45)
+
+    FIG_DIR = "figs"
+    os.makedirs(FIG_DIR, exist_ok=True)
 
     # Load feature matrix
     print("\nĐang load feature matrix...")
@@ -287,6 +344,8 @@ if __name__ == "__main__":
 
     # Lưu model tốt nhất
     save_final_model(X, y, feature_names, best_model_name)
+
+    save_metrics_fig(all_results)
 
     print("\n✅ Hoàn thành Step 4!")
     print("   Chạy predict.py để test APK mới:")
