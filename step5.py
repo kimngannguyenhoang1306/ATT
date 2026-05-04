@@ -147,18 +147,18 @@ def predict_apk(apk_path):
 # OPTIONAL: OBFUSCATION TEST (THEO PAPER)
 # ═══════════════════════════════════════════════
 
-OBFUSCATION_MODES = [
-    "rename",
-    "reflection",
-    "string_encryption",
-    "goto",
-    "junk",
-    "reorder",
-    "debug_removal",
-    "call_indirection",
-    "method_rename",
-    "field_rename",
-]
+OBFUSCATION_MAP = {
+    "rename": "RenameClasses",
+    "reflection": "Reflection",
+    "string_encryption": "StringEncryption",
+    "goto": "Goto",
+    "junk": "AddJunkCode",
+    "reorder": "ReorderCode",
+    "debug_removal": "DebugRemoval",
+    "call_indirection": "MethodCallIndirection",
+    "method_rename": "RenameMethods",
+    "field_rename": "RenameFields",
+}
 
 
 def obfuscate_apk(apk_path, mode):
@@ -168,21 +168,19 @@ def obfuscate_apk(apk_path, mode):
     apk_name = os.path.basename(apk_path).replace(".apk", "")
     out_apk = os.path.join(out_dir, f"{apk_name}_{mode}.apk")
 
-    cmd = [
-        "obfuscapk",
-        "-i",
-        apk_path,
-        "-o",
-        out_apk,
-        "-o",
-        mode,
-    ]
+    obf_class = OBFUSCATION_MAP.get(mode)
+    if obf_class is None:
+        print(f"❌ Unknown mode: {mode}")
+        return None
+
+    cmd = ["python3", "-m", "obfuscapk.cli", "-o", obf_class, apk_path]
 
     try:
-        subprocess.run(cmd, timeout=300)
-        return out_apk
-    except:
-        print(f"❌ Obfuscate fail: {mode}")
+        print(f"⚙️ Running: {mode} -> {obf_class}")
+        subprocess.run(cmd, timeout=600)
+        return apk_path  # Obfuscapk overwrite/workdir output
+    except Exception as e:
+        print(f"❌ Obfuscate fail {mode}: {e}")
         return None
 
 
@@ -191,12 +189,11 @@ def evaluate_obfuscation(apk_path):
 
     results = []
 
-    # original
     print("\n[ORIGINAL]")
     pred = predict_apk(apk_path)
     results.append(("original", pred))
 
-    for mode in OBFUSCATION_MODES:
+    for mode in OBFUSCATION_MAP.keys():
         print(f"\n[{mode.upper()}]")
 
         obf_apk = obfuscate_apk(apk_path, mode)
