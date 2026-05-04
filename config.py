@@ -119,21 +119,21 @@ MODELS_DIR = "models/"
 
 # Feature selection
 MIN_FREQUENCY = 0.01  # loại MOS xuất hiện < 1% apps
-K_BEST = 500  # số features giữ lại
+K_BEST = 2000  # số features giữ lại
 
 # Model parameters
 DNN_CONFIG = {
     "layers": [256, 256, 128],
     "dropout": 0.2,
     "learning_rate": 0.001,
-    "batch_size": 64,
+    "batch_size": 32,
     "epochs": 50,
     "patience": 10,
 }
 
 RF_CONFIG = {
-    "n_estimators": 300,
-    "max_depth": None,
+    "n_estimators": 100,
+    "max_depth": 25,
     "min_samples_split": 2,
     "min_samples_leaf": 1,
 }
