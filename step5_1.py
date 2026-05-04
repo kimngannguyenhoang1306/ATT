@@ -99,14 +99,8 @@ def obfuscate_apk_with_technique(apk_path, technique, work_dir):
             timeout=600,
         )
 
-        # 🔥 IMPORTANT: DO NOT trust returncode
-        apk = find_apk_anywhere(work_dir)
-
-        if apk:
-            return apk
-
-        apk = find_apk_anywhere(tempfile.gettempdir())
-        return apk
+        # 🔥 IMPORTANT: chỉ return smali folder
+        return work_dir
 
     except Exception as e:
         print(f"     ❌ Error: {e}")
@@ -114,7 +108,6 @@ def obfuscate_apk_with_technique(apk_path, technique, work_dir):
 
 
 def extract_mos_set(decompiled_dir):
-    """Extract MOS as set of strings"""
     mos_list = generate_apk_mos(decompiled_dir, CAT1_MAPPING)
     return set("|".join(f"{k}:{v}" for k, v in sorted(m.items())) for m in mos_list)
 
@@ -187,27 +180,19 @@ def test_obfuscation_with_obfuscapk(apk_path):
             os.makedirs(work_dir, exist_ok=True)
 
             # Apply obfuscation
-            obfuscated_apk = obfuscate_apk_with_technique(apk_path, technique, work_dir)
+            work_dir = obfuscate_apk_with_technique(apk_path, technique, work_dir)
 
-            if not obfuscated_apk:
-                print(f"     ⚠️  Skipped")
-                results[technique] = None
+            if not work_dir:
                 continue
 
-            # Decompile obfuscated APK
-            obf_decomp = os.path.join(work_dir, "decompiled")
-            if not decompile_apk(obfuscated_apk, obf_decomp):
-                print(f"     ⚠️  Could not decompile obfuscated APK")
-                results[technique] = None
-                continue
+            print(f"     🔍 Extracting MOS from SMALI...")
 
-            # Extract obfuscated MOS
-            print(f"     🔍 Extracting MOS...")
-            obfuscated_mos = extract_mos_set(obf_decomp)
+            obfuscated_mos = extract_mos_set(work_dir)
+
             print(f"        MOS count: {len(obfuscated_mos)}")
 
-            # Compare
             comparison = compare_mos(original_mos, obfuscated_mos)
+
             results[technique] = comparison
 
             print(
