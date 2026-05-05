@@ -285,43 +285,101 @@ def save_metrics_fig(all_results):
 
     x = np.arange(len(models))
 
+    # ═══════════════════════════════════════════════
+    # LINE CHARTS - Model Performance Metrics
+    # ═══════════════════════════════════════════════
+
+    # All metrics in one figure
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
     # Accuracy
-    plt.figure()
-    plt.bar(x, accs)
-    plt.xticks(x, models)
-    plt.ylabel("Accuracy")
-    plt.title("Model Accuracy")
-    plt.savefig(os.path.join(FIG_DIR, "accuracy.png"))
-    plt.close()
+    axes[0, 0].plot(
+        x,
+        accs,
+        marker="o",
+        linewidth=2,
+        markersize=8,
+        color="#2E86AB",
+        label="Accuracy",
+    )
+    axes[0, 0].set_xticks(x)
+    axes[0, 0].set_xticklabels(models, rotation=15, ha="right")
+    axes[0, 0].set_ylabel("Accuracy (%)", fontsize=11, fontweight="bold")
+    axes[0, 0].set_title("Model Accuracy", fontsize=12, fontweight="bold")
+    axes[0, 0].grid(True, alpha=0.3)
+    axes[0, 0].set_ylim([min(accs) - 0.05, 1.0])
 
     # F1
-    plt.figure()
-    plt.bar(x, f1s)
-    plt.xticks(x, models)
-    plt.ylabel("F1 Score")
-    plt.title("Model F1 Score")
-    plt.savefig(os.path.join(FIG_DIR, "f1.png"))
-    plt.close()
+    axes[0, 1].plot(
+        x, f1s, marker="s", linewidth=2, markersize=8, color="#A23B72", label="F1 Score"
+    )
+    axes[0, 1].set_xticks(x)
+    axes[0, 1].set_xticklabels(models, rotation=15, ha="right")
+    axes[0, 1].set_ylabel("F1 Score (%)", fontsize=11, fontweight="bold")
+    axes[0, 1].set_title("Model F1 Score", fontsize=12, fontweight="bold")
+    axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].set_ylim([min(f1s) - 0.05, 1.0])
 
     # AUC
-    plt.figure()
-    plt.bar(x, aucs)
-    plt.xticks(x, models)
-    plt.ylabel("AUC")
-    plt.title("Model AUC")
-    plt.savefig(os.path.join(FIG_DIR, "auc.png"))
-    plt.close()
+    axes[1, 0].plot(
+        x, aucs, marker="^", linewidth=2, markersize=8, color="#F18F01", label="AUC"
+    )
+    axes[1, 0].set_xticks(x)
+    axes[1, 0].set_xticklabels(models, rotation=15, ha="right")
+    axes[1, 0].set_ylabel("AUC Score (%)", fontsize=11, fontweight="bold")
+    axes[1, 0].set_title("Model AUC", fontsize=12, fontweight="bold")
+    axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].set_ylim([min(aucs) - 0.05, 1.0])
 
     # FPR
-    plt.figure()
-    plt.bar(x, fprs)
-    plt.xticks(x, models)
-    plt.ylabel("FPR")
-    plt.title("Model False Positive Rate")
-    plt.savefig(os.path.join(FIG_DIR, "fpr.png"))
+    axes[1, 1].plot(
+        x, fprs, marker="d", linewidth=2, markersize=8, color="#C73E1D", label="FPR"
+    )
+    axes[1, 1].set_xticks(x)
+    axes[1, 1].set_xticklabels(models, rotation=15, ha="right")
+    axes[1, 1].set_ylabel("False Positive Rate", fontsize=11, fontweight="bold")
+    axes[1, 1].set_title("Model False Positive Rate", fontsize=12, fontweight="bold")
+    axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].set_ylim([min(fprs) - 0.01, max(fprs) + 0.01])
+
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(FIG_DIR, "model_metrics_combined.png"),
+        dpi=150,
+        bbox_inches="tight",
+    )
     plt.close()
 
-    print(f"📊 Saved figures to: {FIG_DIR}/")
+    # Individual line charts for each metric
+    metrics = [
+        ("accuracy", accs, "Model Accuracy", "#2E86AB", "o"),
+        ("f1", f1s, "Model F1 Score", "#A23B72", "s"),
+        ("auc", aucs, "Model AUC", "#F18F01", "^"),
+        ("fpr", fprs, "Model False Positive Rate", "#C73E1D", "d"),
+    ]
+
+    for metric_name, metric_values, title, color, marker in metrics:
+        plt.figure(figsize=(10, 6))
+        plt.plot(
+            x, metric_values, marker=marker, linewidth=2.5, markersize=10, color=color
+        )
+        plt.xticks(x, models, rotation=15, ha="right")
+        plt.ylabel(title.split()[-1], fontsize=12, fontweight="bold")
+        plt.title(title, fontsize=14, fontweight="bold")
+        plt.grid(True, alpha=0.3)
+        if metric_name == "fpr":
+            plt.ylim([min(metric_values) - 0.01, max(metric_values) + 0.01])
+        else:
+            plt.ylim([min(metric_values) - 0.05, 1.0])
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(FIG_DIR, f"{metric_name}_line.png"),
+            dpi=150,
+            bbox_inches="tight",
+        )
+        plt.close()
+
+    print(f"📊 Saved line charts to: {FIG_DIR}/")
 
 
 # ═══════════════════════════════════════════════
