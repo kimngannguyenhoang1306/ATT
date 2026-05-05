@@ -3,7 +3,7 @@
 # Script để chọn 10 malware, 10 benign từ decoded folder
 # rồi truy ngược lại raw_apk để lấy APK gốc rồi move đi
 
-set -e
+set -x
 
 # Configuration
 DECODED_MALWARE="decoded/malware"
@@ -76,16 +76,16 @@ copy_sample() {
     fi
     
     # Copy decoded APK
-    cp -r "$decoded_folder" "$target_decoded_dir/" 2>/dev/null || {
-        echo -e "${RED}✗${NC} Failed to copy decoded: $app_name"
+    mv "$decoded_folder" "$target_decoded_dir/" 2>/dev/null || {
+        echo -e "${RED}✗${NC} Failed to move decoded: $app_name"
         return 1
     }
-    echo -e "${GREEN}✓${NC} Copied decoded: $app_name"
+    echo -e "${GREEN}✓${NC} Moved decoded: $app_name"
     
     # Find and copy corresponding original APK
     local apk_file=$(find_corresponding_apk "$app_name" "$source_apk_dir")
     if [ -f "$apk_file" ]; then
-        cp "$apk_file" "$target_apk_dir/" 2>/dev/null
+        mv "$apk_file" "$target_apk_dir/" 2>/dev/null
         echo -e "${GREEN}  └─ APK: $(basename "$apk_file")${NC}"
     else
         echo -e "${YELLOW}  ⚠ APK not found for: $app_name${NC}"
