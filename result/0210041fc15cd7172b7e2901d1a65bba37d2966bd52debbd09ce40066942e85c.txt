@@ -1,0 +1,135 @@
+
+======================================================================
+MOSDroid Obfuscation Resilience Test (with ObfuscAPK)
+======================================================================
+
+Testing: 0210041fc15cd7172b7e2901d1a65bba37d2966bd52debbd09ce40066942e85c.apk
+
+📦 ORIGINAL APK
+  🔍 Extracting MOS...
+     MOS count: 9260
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+
+📝 OBFUSCATION TESTS
+
+  [rebuild]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [field_rename]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [method_rename]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [class_rename]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [method_overload]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [goto]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [call_indirect]
+     🔍 Extracting MOS from smali...
+        MOS count: 9234
+     📊 BENIGN  : 10.00%
+     📊 MALWARE : 90.00%
+     ⚠️  MALWARE
+     ✓ Kept:  9234 ( 99.72%)
+     ✗ Lost:    26
+     + New:      0
+
+  [reflection]
+     🔍 Extracting MOS from smali...
+        MOS count: 9478
+     📊 BENIGN  : 13.00%
+     📊 MALWARE : 87.00%
+     ⚠️  MALWARE
+     ✓ Kept:  8691 ( 93.86%)
+     ✗ Lost:   569
+     + New:    787
+
+  [string_encrypt]
+     🔍 Extracting MOS from smali...
+        MOS count: 9583
+     📊 BENIGN  : 19.77%
+     📊 MALWARE : 80.23%
+     ⚠️  MALWARE
+     ✓ Kept:  6573 ( 70.98%)
+     ✗ Lost:  2687
+     + New:   3010
+
+  [reorder]
+     🔍 Extracting MOS from smali...
+        MOS count: 6977
+     📊 BENIGN  : 62.77%
+     📊 MALWARE : 37.23%
+     ✅ BENIGN
+     ✓ Kept:   252 (  2.72%)
+     ✗ Lost:  9008
+     + New:   6725
+
+======================================================================
+SUMMARY REPORT
+======================================================================
+Technique             MOS Count   Kept   Lost Preservation   Prediction
+----------------------------------------------------------------------
+original                   9260   9260      0      100.00%      MALWARE
+rebuild                    9234   9234     26       99.72%      MALWARE
+field_rename               9234   9234     26       99.72%      MALWARE
+method_rename              9234   9234     26       99.72%      MALWARE
+class_rename               9234   9234     26       99.72%      MALWARE
+method_overload            9234   9234     26       99.72%      MALWARE
+goto                       9234   9234     26       99.72%      MALWARE
+call_indirect              9234   9234     26       99.72%      MALWARE
+reflection                 9478   8691    569       93.86%      MALWARE
+string_encrypt             9583   6573   2687       70.98%      MALWARE
+reorder                    6977    252   9008        2.72%       BENIGN
+----------------------------------------------------------------------
+Average Preservation                                86.56%
+======================================================================
