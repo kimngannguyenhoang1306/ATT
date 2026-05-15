@@ -42,7 +42,6 @@ import random
 MULTI_OBF_CANDIDATES = [
     ("call_indirect", "CallIndirection"),
     ("reflection", "Reflection"),
-    ("string_encrypt", "ConstStringEncryption"),
     ("method_overload", "MethodOverload"),
     ("reorder", "Reorder"),
 ]
