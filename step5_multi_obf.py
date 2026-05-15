@@ -50,71 +50,55 @@ MULTI_OBF_CANDIDATES = [
 
 def apply_multiple_obfuscations(apk_path, techniques, work_dir):
     """
-    Apply multiple obfuscations sequentially.
-    techniques = list of tuples [(key, class_name), ...]
+    Apply multiple obfuscators in ONE obfuscapk execution.
+    techniques = [(key, class_name), ...]
     """
 
-    current_apk = apk_path
+    obf_classes = [x[1] for x in techniques]
 
-    for idx, (_, obf_class) in enumerate(techniques):
-        step_dir = os.path.join(work_dir, f"step_{idx}")
-        os.makedirs(step_dir, exist_ok=True)
+    cmd = [
+        "python3",
+        "-m",
+        "obfuscapk.cli",
+    ]
 
-        print(f"     Applying {obf_class}...")
+    for obf in obf_classes:
+        cmd.extend(["-o", obf])
 
-        cmd = [
-            "python3",
-            "-m",
-            "obfuscapk.cli",
-            "-o",
-            obf_class,
+    cmd.extend(
+        [
             "-w",
-            step_dir,
-            current_apk,
+            work_dir,
+            apk_path,
         ]
+    )
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
+    print(f"     Running combined obfuscation:")
+    print(f"     {' + '.join(obf_classes)}")
 
-            if result.returncode != 0:
-                print(f"     ⚠️ stderr: {result.stderr[-300:]}")
-                return None
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=1200,
+        )
 
-            apk_stem = os.path.splitext(os.path.basename(current_apk))[0]
-
-            # tìm APK output mới
-            generated_apk = None
-
-            for root, _, files in os.walk(step_dir):
-                for f in files:
-                    if f.endswith(".apk"):
-                        generated_apk = os.path.join(root, f)
-                        break
-
-            if generated_apk is None:
-                print("     ❌ No APK generated")
-                return None
-
-            current_apk = generated_apk
-
-        except Exception as e:
-            print(f"     ❌ Multi-obfuscation error: {e}")
+        if result.returncode != 0:
+            print(f"     ⚠️ stderr: {result.stderr[-500:]}")
             return None
 
-    # cuối cùng tìm smali folder
-    final_smali = None
+        # tìm smali
+        for root, dirs, _ in os.walk(work_dir):
+            if "smali" in dirs:
+                return os.path.join(root, "smali")
 
-    for root, dirs, _ in os.walk(step_dir):
-        if "smali" in dirs:
-            final_smali = os.path.join(root, "smali")
-            break
+        print("     ❌ No smali folder found")
+        return None
 
-    return final_smali
+    except Exception as e:
+        print(f"     ❌ Multi-obfuscation error: {e}")
+        return None
 
 
 # ═══════════════════════════════════════════════
@@ -203,7 +187,7 @@ def obfuscate_apk(apk_path, obf_class, work_dir):
         smali_dir = os.path.join(work_dir, apk_stem, "smali")
 
         if os.path.isdir(smali_dir):
-            return smali_dir
+            return os.path.dirname(smali_dir)
 
         # Fallback: tìm bất kỳ smali/ folder nào trong work_dir
         for root, dirs, _ in os.walk(work_dir):
