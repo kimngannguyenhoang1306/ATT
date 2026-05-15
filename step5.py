@@ -1,290 +1,204 @@
 #!/usr/bin/env python3
 """
-STEP 5: Obfuscation Resilience Testing (MOSDroid Paper)
-
-Tạo 10 loại obfuscation và test MOS extraction:
-1. Junk code insertion (NOP)
-2. Class renaming
-3. Method renaming
-4. Field renaming
-5. String encryption
-6. Control flow obfuscation (GOTO)
-7. Reflection
-8. Call indirection
-9. Dead code insertion
-10. Reordering instructions
+STEP 5.1: Obfuscation Resilience Testing with ObfuscAPK CLI Tool
 """
 
 import os
-import json
-import pickle
-import random
-import re
+import sys
+import subprocess
 import shutil
+import tempfile
+import pickle
 from pathlib import Path
-from copy import deepcopy
-from collections import Counter
 
-from config import CAT1_MAPPING, DECOMPILED_DIR, APK_MOS_DIR, MODELS_DIR
+from config import CAT1_MAPPING, DECOMPILED_DIR, MODELS_DIR
 from step2 import generate_apk_mos
 
-# ═══════════════════════════════════════════════
-# OBFUSCATION TECHNIQUES (10 types per paper)
-# ═══════════════════════════════════════════════
-
-
-def obfus_junk_code(lines):
-    """1. Insert junk NOP operations"""
-    result = []
-    for i, line in enumerate(lines):
-        result.append(line)
-        if "invoke" in line or "return" in line:
-            result.append("    nop\n")
-    return result
-
-
-def obfus_rename_class(lines):
-    """2. Class renaming"""
-    mapping = {}
-    result = []
-    for line in lines:
-        # Replace Landroid/app/Activity → LObf123/xyz/Activity
-        if "L" in line and "/" in line:
-            match = re.search(r"(L[^;]+)", line)
-            if match:
-                class_name = match.group(1)
-                if class_name not in mapping:
-                    mapping[class_name] = f"L{random.randint(1000,9999)}/obf"
-                line = line.replace(class_name, mapping[class_name])
-        result.append(line)
-    return result
-
-
-def obfus_rename_method(lines):
-    """3. Method renaming"""
-    result = []
-    method_map = {}
-    for line in lines:
-        if ".method " in line:
-            # Rename method public foo → public obf_123
-            line = re.sub(
-                r"public \w+\(",
-                lambda m: f"public obf_{random.randint(1000,9999)}(",
-                line,
-            )
-        elif "invoke" in line and "->" in line:
-            # Rename method calls
-            line = re.sub(r"->(\w+)\(", lambda m: f"->{m.group(1)}_obf(", line)
-        result.append(line)
-    return result
-
-
-def obfus_rename_field(lines):
-    """4. Field renaming"""
-    result = []
-    for line in lines:
-        if (
-            "L" in line
-            and ":" in line
-            and not ".method" in line
-            and not ".field" in line
-        ):
-            # Rename field references
-            line = re.sub(r":(\w+)", lambda m: f":{m.group(1)}_obf", line)
-        result.append(line)
-    return result
-
-
-def obfus_string_encryption(lines):
-    """5. String encryption (replace with constants)"""
-    result = []
-    for line in lines:
-        if '"' in line:
-            # Replace string with const reference
-            line = re.sub(r'"[^"]*"', "p_encr_str", line)
-        result.append(line)
-    return result
-
-
-def obfus_control_flow(lines):
-    """6. Control flow obfuscation (add GOTO)"""
-    result = []
-    for i, line in enumerate(lines):
-        result.append(line)
-        if "if-" in line or "return" in line:
-            result.append("    :label_obf\n")
-            result.append("    goto :end_obf\n")
-            result.append("    :end_obf\n")
-    return result
-
-
-def obfus_reflection(lines):
-    """7. Add reflection calls"""
-    result = []
-    for line in lines:
-        result.append(line)
-        if "invoke" in line and "direct" not in line:
-            result.append('    const-string v_temp, "java/lang/reflection"\n')
-            result.append(
-                "    invoke-static {v_temp}, Ljava/lang/Class;.forName(Ljava/lang/String;)Ljava/lang/Class;\n"
-            )
-    return result
-
-
-def obfus_call_indirection(lines):
-    """8. Call indirection (wrap calls)"""
-    result = []
-    for line in lines:
-        if "invoke-virtual" in line:
-            # Convert direct to indirect
-            line = line.replace("invoke-virtual", "invoke-interface")
-        result.append(line)
-    return result
-
-
-def obfus_dead_code(lines):
-    """9. Dead code insertion"""
-    result = []
-    for line in lines:
-        result.append(line)
-        if ".method" in line:
-            result.append("    const v_dead, 0xdeadbeef\n")
-            result.append("    if-nez v_dead, :skip_dead\n")
-            result.append("    # unreachable dead code\n")
-            result.append("    :skip_dead\n")
-    return result
-
-
-def obfus_reorder_instructions(lines):
-    """10. Reorder instructions (randomize order)"""
-    # Group by method
-    result = []
-    current_method = []
-    in_method = False
-
-    for line in lines:
-        if ".method" in line:
-            if current_method:
-                # Shuffle non-control-flow instructions
-                instrs = [
-                    l
-                    for l in current_method
-                    if not any(
-                        x in l for x in [".method", ".end", "goto", "if-", "return"]
-                    )
-                ]
-                controls = [
-                    l
-                    for l in current_method
-                    if any(x in l for x in [".method", ".end", "goto", "if-", "return"])
-                ]
-                random.shuffle(instrs)
-                result.extend(controls[:1])
-                result.extend(instrs)
-                result.extend(controls[1:])
-                current_method = []
-            in_method = True
-            current_method.append(line)
-        elif ".end method" in line:
-            current_method.append(line)
-            result.extend(current_method)
-            current_method = []
-            in_method = False
-        else:
-            current_method.append(line)
-
-    if current_method:
-        result.extend(current_method)
-
-    return result if result else lines
-
+import numpy as np
 
 # ═══════════════════════════════════════════════
-# OBFUSCATION PIPELINE
+# OBFUSCATION TECHNIQUES
 # ═══════════════════════════════════════════════
 
-OBFUSCATION_FUNCS = {
-    "junk_code": obfus_junk_code,
-    "class_rename": obfus_rename_class,
-    "method_rename": obfus_rename_method,
-    "field_rename": obfus_rename_field,
-    "string_encrypt": obfus_string_encryption,
-    "control_flow": obfus_control_flow,
-    "reflection": obfus_reflection,
-    "call_indirect": obfus_call_indirection,
-    "dead_code": obfus_dead_code,
-    "reorder": obfus_reorder_instructions,
+OBFUSCATION_TECHNIQUES = {
+    "rebuild": "Rebuild",
+    "field_rename": "FieldRename",
+    "method_rename": "MethodRename",
+    "class_rename": "ClassRename",
+    "method_overload": "MethodOverload",
+    "goto": "Goto",
+    "call_indirect": "CallIndirection",
+    "reflection": "Reflection",
+    "string_encrypt": "ConstStringEncryption",
+    "reorder": "Reorder",
 }
 
 
-def apply_obfuscation(smali_file_path, obfus_type):
-    """Apply obfuscation to smali file"""
+# ═══════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════
+
+
+def check_obfuscapk():
     try:
-        with open(smali_file_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-    except:
+        result = subprocess.run(
+            ["python3", "-m", "obfuscapk.cli", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return "usage" in result.stderr.lower() or "usage" in result.stdout.lower()
+    except Exception:
+        return False
+
+
+def decompile_apk(apk_path, output_dir):
+    """Decompile APK using apktool"""
+    print(f"  🔧 Decompiling {os.path.basename(apk_path)}...")
+    try:
+        subprocess.run(
+            ["apktool", "d", apk_path, "-o", output_dir, "-f", "-r"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+            check=True,
+        )
+        return True
+    except Exception as e:
+        print(f"     ❌ Decompile failed: {e}")
+        return False
+
+
+def recompile_apk(decompiled_dir, output_apk_path):
+    """Recompile decompiled directory back to APK using apktool"""
+    print(f"  🔨 Recompiling to APK...")
+    try:
+        subprocess.run(
+            ["apktool", "b", decompiled_dir, "-o", output_apk_path, "--use-aapt2"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+            check=True,
+        )
+        return os.path.exists(output_apk_path)
+    except Exception as e:
+        print(f"     ❌ Recompile failed: {e}")
+        return False
+
+
+def obfuscate_apk(apk_path, obf_class, work_dir):
+    """
+    obfuscapk tự decompile APK vào work_dir/<apk_stem>/<apk_stem>/smali/
+    Trả về đường dẫn smali folder đó.
+    """
+    print(f"     Applying {obf_class}...")
+
+    cmd = [
+        "python3",
+        "-m",
+        "obfuscapk.cli",
+        "-o",
+        obf_class,
+        "-w",
+        work_dir,
+        apk_path,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+
+        if result.returncode != 0:
+            print(f"     ⚠️  stderr: {result.stderr[-300:]}")
+
+        # Cấu trúc: work_dir/<apk_stem>/smali/
+        apk_stem = os.path.splitext(os.path.basename(apk_path))[0]
+        smali_dir = os.path.join(work_dir, apk_stem, "smali")
+
+        if os.path.isdir(smali_dir):
+            return smali_dir
+
+        # Fallback: tìm bất kỳ smali/ folder nào trong work_dir
+        for root, dirs, _ in os.walk(work_dir):
+            if "smali" in dirs:
+                candidate = os.path.join(root, "smali")
+                print(f"     📁 Found smali at: {candidate}")
+                return candidate
+
+        print(f"     ❌ No smali dir found in {work_dir}")
+        print(f"     stdout: {result.stdout[-200:]}")
+        print(f"     stderr: {result.stderr[-200:]}")
         return None
 
-    if obfus_type not in OBFUSCATION_FUNCS:
+    except Exception as e:
+        print(f"     ❌ obfuscapk error: {e}")
         return None
-
-    obfus_func = OBFUSCATION_FUNCS[obfus_type]
-    obfuscated_lines = obfus_func(lines)
-
-    return obfuscated_lines
-
-
-def create_obfuscated_copy(decompiled_dir, obfus_type, output_dir):
-    """Create obfuscated copy of decompiled APK"""
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Copy all files
-    for root, dirs, files in os.walk(decompiled_dir):
-        rel_path = os.path.relpath(root, decompiled_dir)
-        target_dir = os.path.join(output_dir, rel_path)
-        os.makedirs(target_dir, exist_ok=True)
-
-        for file in files:
-            src = os.path.join(root, file)
-            dst = os.path.join(target_dir, file)
-
-            if file.endswith(".smali"):
-                # Apply obfuscation
-                obfuscated = apply_obfuscation(src, obfus_type)
-                if obfuscated:
-                    with open(dst, "w", encoding="utf-8") as f:
-                        f.writelines(obfuscated)
-                else:
-                    shutil.copy2(src, dst)
-            else:
-                shutil.copy2(src, dst)
-
-    return output_dir
-
-
-# ═══════════════════════════════════════════════
-# MOS EXTRACTION & COMPARISON
-# ═══════════════════════════════════════════════
-
-
-def mos_dict_to_str(mos_dict):
-    """Convert MOS dict to string"""
-    return "|".join(f"{k}:{v}" for k, v in sorted(mos_dict.items()))
 
 
 def extract_mos_set(decompiled_dir):
-    """Extract MOS as set of strings"""
+    """Return MOS as a set of canonical strings for set-intersection comparison."""
     mos_list = generate_apk_mos(decompiled_dir, CAT1_MAPPING)
-    return set(mos_dict_to_str(m) for m in mos_list)
+    return set("|".join(f"{k}:{v}" for k, v in sorted(m.items())) for m in mos_list)
+
+
+def build_feature_vector(mos_set, feature_names):
+    """
+    Convert a MOS set into a binary feature vector aligned to feature_names.
+    feature_names is the full list of MOS strings used during training.
+    """
+    mos_index = {name: i for i, name in enumerate(feature_names)}
+    vector = np.zeros(len(feature_names), dtype=np.float32)
+    for mos_str in mos_set:
+        if mos_str in mos_index:
+            vector[mos_index[mos_str]] = 1.0
+    return vector
+
+
+def predict_vector(vector, model_data):
+    """
+    Run inference with the saved model.
+    Returns (pred_label, benign_pct, malware_pct).
+    """
+    model = model_data["model"]
+    model_name = model_data["model_name"]
+    sel_idx = model_data["selected_idx"]
+
+    X = vector[sel_idx].reshape(1, -1)
+
+    if model_name == "DNN":
+        prob_malware = float(model.predict(X, verbose=0).flatten()[0])
+        prob_benign = 1.0 - prob_malware
+        pred = int(prob_malware >= 0.5)
+
+    elif model_name == "RF":
+        proba = model.predict_proba(X)[0]
+        prob_benign = float(proba[0])
+        prob_malware = float(proba[1])
+        pred = int(model.predict(X)[0])
+
+    elif model_name == "SVM":
+        decision = float(model.decision_function(X)[0])
+        # LinearSVC has no probability; use sigmoid approximation
+        prob_malware = float(1 / (1 + np.exp(-decision)))
+        prob_benign = 1.0 - prob_malware
+        pred = int(model.predict(X)[0])
+
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    return pred, prob_benign * 100, prob_malware * 100
 
 
 def compare_mos(original_mos, obfuscated_mos):
-    """Compare MOS sets"""
-    kept = original_mos & obfuscated_mos  # Intersection
-    lost = original_mos - obfuscated_mos  # Lost
-    new = obfuscated_mos - original_mos  # New
+    kept = original_mos & obfuscated_mos
+    lost = original_mos - obfuscated_mos
+    new = obfuscated_mos - original_mos
 
-    preservation = len(kept) / len(original_mos) * 100 if original_mos else 0
+    preservation = len(kept) / len(original_mos) * 100 if original_mos else 0.0
 
     return {
         "kept": len(kept),
@@ -295,82 +209,163 @@ def compare_mos(original_mos, obfuscated_mos):
 
 
 # ═══════════════════════════════════════════════
-# OBFUSCATION RESILIENCE TEST
+# MAIN TEST FUNCTION
 # ═══════════════════════════════════════════════
+def test_obfuscation_with_obfuscapk(apk_path):
+    """Test obfuscation resilience using obfuscapk CLI tool"""
 
+    result_dir = "result"
+    os.makedirs(result_dir, exist_ok=True)
 
-def test_obfuscation_resilience(decompiled_dir):
-    """Test all 10 obfuscation types"""
+    apk_name = os.path.splitext(os.path.basename(apk_path))[0]
+    result_file = os.path.join(result_dir, f"{apk_name}.txt")
 
-    print("\n" + "=" * 70)
-    print("MOSDroid Obfuscation Resilience Test")
-    print("=" * 70)
+    log_lines = []
 
-    # Extract original MOS
-    print("\n🔍 Extracting MOS from ORIGINAL APK...")
-    original_mos = extract_mos_set(decompiled_dir)
-    print(f"   Original MOS count: {len(original_mos)}")
+    def log(s):
+        print(s)
+        log_lines.append(s)
+
+    log("\n" + "=" * 70)
+    log("MOSDroid Obfuscation Resilience Test (with ObfuscAPK)")
+    log("=" * 70)
+    log(f"\nTesting: {os.path.basename(apk_path)}")
+
+    if not check_obfuscapk():
+        log("⚠️  obfuscapk not available. Install with: pip install obfuscapk")
+        log("    Falling back to step5.py (simulated obfuscation)")
+        return None
+
+    # Load saved model
+    model_path = os.path.join(MODELS_DIR, "best_model.pkl")
+    if not os.path.exists(model_path):
+        log(f"❌ Model not found at {model_path}. Run step4 first.")
+        return None
+
+    with open(model_path, "rb") as f:
+        model_data = pickle.load(f)
+
+    feature_names = model_data["feature_names"]
 
     results = {}
+    temp_base = tempfile.mkdtemp(prefix="mosdroid_obf_")
 
-    # Test each obfuscation
-    for obfus_type in OBFUSCATION_FUNCS.keys():
-        print(f"\n📝 Testing: {obfus_type}")
+    try:
+        # ── Step 1: Decompile original APK ──────────────────────────────
+        log("\n📦 ORIGINAL APK")
+        original_decomp = os.path.join(temp_base, "original")
+        os.makedirs(original_decomp, exist_ok=True)
 
-        # Create obfuscated copy
-        obfus_dir = os.path.join(
-            "obfus_test", f"{os.path.basename(decompiled_dir)}_{obfus_type}"
-        )
-        create_obfuscated_copy(decompiled_dir, obfus_type, obfus_dir)
+        if not decompile_apk(apk_path, original_decomp):
+            log("❌ Failed to decompile original APK")
+            return None
 
-        # Extract MOS from obfuscated
-        try:
-            obfuscated_mos = extract_mos_set(obfus_dir)
-            print(f"   Obfuscated MOS count: {len(obfuscated_mos)}")
+        log("  🔍 Extracting MOS...")
+        original_mos = extract_mos_set(original_decomp)
+        log(f"     MOS count: {len(original_mos)}")
 
-            # Compare
+        orig_vector = build_feature_vector(original_mos, feature_names)
+        orig_pred, orig_benign, orig_malware = predict_vector(orig_vector, model_data)
+
+        log(f"     📊 BENIGN  : {orig_benign:.2f}%")
+        log(f"     📊 MALWARE : {orig_malware:.2f}%")
+        log(f"     {'⚠️  MALWARE' if orig_pred == 1 else '✅ BENIGN'}")
+
+        results["original"] = {
+            "mos_count": len(original_mos),
+            "preservation_rate": 100.0,
+            "pred": orig_pred,
+            "benign": orig_benign,
+            "malware": orig_malware,
+        }
+
+        # ── Step 2: Test each obfuscation technique ──────────────────────
+        log("\n📝 OBFUSCATION TESTS")
+
+        for technique, obf_class in OBFUSCATION_TECHNIQUES.items():
+            log(f"\n  [{technique}]")
+
+            work_dir = os.path.join(temp_base, f"obf_{technique}")
+            os.makedirs(work_dir, exist_ok=True)
+
+            # obfuscapk tự decompile → trả về smali dir luôn
+            smali_dir = obfuscate_apk(apk_path, obf_class, work_dir)
+            if not smali_dir:
+                log(f"     ⚠️  Skipping {technique}")
+                results[technique] = None
+                continue
+
+            # Extract MOS thẳng từ smali
+            log(f"     🔍 Extracting MOS from smali...")
+            obfuscated_mos = extract_mos_set(smali_dir)
+            log(f"        MOS count: {len(obfuscated_mos)}")
+
+            # Predict
+            obf_vector = build_feature_vector(obfuscated_mos, feature_names)
+            pred, benign_pct, malware_pct = predict_vector(obf_vector, model_data)
+
+            log(f"     📊 BENIGN  : {benign_pct:.2f}%")
+            log(f"     📊 MALWARE : {malware_pct:.2f}%")
+            log(f"     {'⚠️  MALWARE' if pred == 1 else '✅ BENIGN'}")
+
             comparison = compare_mos(original_mos, obfuscated_mos)
-            results[obfus_type] = comparison
+            results[technique] = {
+                "pred": pred,
+                "benign": benign_pct,
+                "malware": malware_pct,
+                **comparison,
+            }
 
-            print(
-                f"   ✓ Kept:  {comparison['kept']:4d} ({comparison['preservation_rate']:6.2f}%)"
+            log(
+                f"     ✓ Kept:  {comparison['kept']:4d} ({comparison['preservation_rate']:6.2f}%)"
             )
-            print(f"   ✗ Lost:  {comparison['lost']:4d}")
-            print(f"   + New:   {comparison['new']:4d}")
+            log(f"     ✗ Lost:  {comparison['lost']:4d}")
+            log(f"     + New:   {comparison['new']:4d}")
 
-        except Exception as e:
-            print(f"   ❌ Error: {e}")
-            results[obfus_type] = None
+    finally:
+        if os.path.exists(temp_base):
+            shutil.rmtree(temp_base)
 
-        # Cleanup
-        if os.path.exists(obfus_dir):
-            shutil.rmtree(obfus_dir)
-
-    # Summary Report
-    print("\n" + "=" * 70)
-    print("SUMMARY REPORT")
-    print("=" * 70)
-    print(
-        f"{'Obfuscation Type':<20} {'Kept':>6} {'Lost':>6} {'New':>6} {'Preservation':>12}"
+    # ── Summary Report ───────────────────────────────────────────────────
+    log("\n" + "=" * 70)
+    log("SUMMARY REPORT")
+    log("=" * 70)
+    log(
+        f"{'Technique':<20} {'MOS Count':>10} {'Kept':>6} {'Lost':>6} "
+        f"{'Preservation':>12} {'Prediction':>12}"
     )
-    print("-" * 70)
+    log("-" * 70)
 
-    for obfus_type, result in results.items():
-        if result:
-            print(
-                f"{obfus_type:<20} {result['kept']:>6} {result['lost']:>6} {result['new']:>6} "
-                f"{result['preservation_rate']:>11.2f}%"
-            )
+    orig_count = results["original"]["mos_count"]
+    log(
+        f"{'original':<20} {orig_count:>10} {orig_count:>6} {'0':>6} "
+        f"{'100.00%':>12} "
+        f"{'MALWARE' if results['original']['pred'] == 1 else 'BENIGN':>12}"
+    )
 
-    # Average preservation rate
-    preservation_rates = [r["preservation_rate"] for r in results.values() if r]
+    preservation_rates = []
+    for technique, result in results.items():
+        if technique == "original" or result is None:
+            continue
+        obf_count = orig_count + result["new"] - result["lost"]
+        log(
+            f"{technique:<20} {obf_count:>10} {result['kept']:>6} {result['lost']:>6} "
+            f"{result['preservation_rate']:>11.2f}% "
+            f"{'MALWARE' if result['pred'] == 1 else 'BENIGN':>12}"
+        )
+        preservation_rates.append(result["preservation_rate"])
+
     avg_rate = (
-        sum(preservation_rates) / len(preservation_rates) if preservation_rates else 0
+        sum(preservation_rates) / len(preservation_rates) if preservation_rates else 0.0
     )
+    log("-" * 70)
+    log(f"{'Average Preservation':<20} {' ':>10} {' ':>6} {' ':>6} {avg_rate:>11.2f}%")
+    log("=" * 70)
 
-    print("-" * 70)
-    print(f"{'Average Preservation Rate':<20} {avg_rate:>50.2f}%")
-    print("=" * 70)
+    with open(result_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(log_lines))
+
+    log(f"\n📁 Saved result: {result_file}")
 
     return results
 
@@ -380,18 +375,21 @@ def test_obfuscation_resilience(decompiled_dir):
 # ═══════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) < 2:
-        print("Usage: python step5.py <decompiled_apk_dir>")
-        print("Example: python step5.py raw_apk/decompiled/app123_smali")
+        print("Usage: python step5_1.py <apk_file_path>")
+        print("Example: python step5_1.py app.apk")
+        print("\nNote: Requires obfuscapk:")
+        print("  pip install obfuscapk")
         sys.exit(1)
 
-    decompiled_dir = sys.argv[1]
+    apk_path = sys.argv[1]
 
-    if not os.path.exists(decompiled_dir):
-        print(f"❌ Directory not found: {decompiled_dir}")
+    if not os.path.exists(apk_path):
+        print(f"❌ APK not found: {apk_path}")
         sys.exit(1)
 
-    # Run obfuscation resilience test
-    test_obfuscation_resilience(decompiled_dir)
+    if not apk_path.endswith(".apk"):
+        print(f"❌ File must be APK: {apk_path}")
+        sys.exit(1)
+
+    test_obfuscation_with_obfuscapk(apk_path)

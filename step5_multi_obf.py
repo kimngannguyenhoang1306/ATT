@@ -33,6 +33,89 @@ OBFUSCATION_TECHNIQUES = {
     "reorder": "Reorder",
 }
 
+# ═══════════════════════════════════════════════
+# MULTI-OBFUSCATION TEST (NEW)
+# ═══════════════════════════════════════════════
+
+import random
+
+MULTI_OBF_CANDIDATES = [
+    ("call_indirect", "CallIndirection"),
+    ("reflection", "Reflection"),
+    ("string_encrypt", "ConstStringEncryption"),
+    ("method_overload", "MethodOverload"),
+    ("reorder", "Reorder"),
+]
+
+
+def apply_multiple_obfuscations(apk_path, techniques, work_dir):
+    """
+    Apply multiple obfuscations sequentially.
+    techniques = list of tuples [(key, class_name), ...]
+    """
+
+    current_apk = apk_path
+
+    for idx, (_, obf_class) in enumerate(techniques):
+        step_dir = os.path.join(work_dir, f"step_{idx}")
+        os.makedirs(step_dir, exist_ok=True)
+
+        print(f"     Applying {obf_class}...")
+
+        cmd = [
+            "python3",
+            "-m",
+            "obfuscapk.cli",
+            "-o",
+            obf_class,
+            "-w",
+            step_dir,
+            current_apk,
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+
+            if result.returncode != 0:
+                print(f"     ⚠️ stderr: {result.stderr[-300:]}")
+                return None
+
+            apk_stem = os.path.splitext(os.path.basename(current_apk))[0]
+
+            # tìm APK output mới
+            generated_apk = None
+
+            for root, _, files in os.walk(step_dir):
+                for f in files:
+                    if f.endswith(".apk"):
+                        generated_apk = os.path.join(root, f)
+                        break
+
+            if generated_apk is None:
+                print("     ❌ No APK generated")
+                return None
+
+            current_apk = generated_apk
+
+        except Exception as e:
+            print(f"     ❌ Multi-obfuscation error: {e}")
+            return None
+
+    # cuối cùng tìm smali folder
+    final_smali = None
+
+    for root, dirs, _ in os.walk(step_dir):
+        if "smali" in dirs:
+            final_smali = os.path.join(root, "smali")
+            break
+
+    return final_smali
+
 
 # ═══════════════════════════════════════════════
 # HELPERS
@@ -322,6 +405,70 @@ def test_obfuscation_with_obfuscapk(apk_path):
             log(f"     ✗ Lost:  {comparison['lost']:4d}")
             log(f"     + New:   {comparison['new']:4d}")
 
+        # ─────────────────────────────────────────────
+        # STEP 11: MULTI-OBFUSCATION TEST
+        # ─────────────────────────────────────────────
+
+        log(f"\n  [multi_obfuscation]")
+
+        multi_work_dir = os.path.join(temp_base, "multi_obf")
+        os.makedirs(multi_work_dir, exist_ok=True)
+
+        selected_multi = random.sample(MULTI_OBF_CANDIDATES, 2)
+
+        tech_names = [x[0] for x in selected_multi]
+        tech_classes = [x[1] for x in selected_multi]
+
+        log(f"     Selected techniques: {', '.join(tech_classes)}")
+
+        smali_dir = apply_multiple_obfuscations(
+            apk_path,
+            selected_multi,
+            multi_work_dir,
+        )
+
+        if not smali_dir:
+            log("     ⚠️ Multi-obfuscation failed")
+            results["multi_obfuscation"] = None
+
+        else:
+            log("     🔍 Extracting MOS from multi-obfuscated APK...")
+
+            obfuscated_mos = extract_mos_set(smali_dir)
+
+            log(f"        MOS count: {len(obfuscated_mos)}")
+
+            obf_vector = build_feature_vector(
+                obfuscated_mos,
+                feature_names,
+            )
+
+            pred, benign_pct, malware_pct = predict_vector(
+                obf_vector,
+                model_data,
+            )
+
+            log(f"     📊 BENIGN  : {benign_pct:.2f}%")
+            log(f"     📊 MALWARE : {malware_pct:.2f}%")
+            log(f"     {'⚠️  MALWARE' if pred == 1 else '✅ BENIGN'}")
+
+            comparison = compare_mos(original_mos, obfuscated_mos)
+
+            results["multi_obfuscation"] = {
+                "pred": pred,
+                "benign": benign_pct,
+                "malware": malware_pct,
+                "techniques": tech_classes,
+                **comparison,
+            }
+
+            log(
+                f"     ✓ Kept:  {comparison['kept']:4d} "
+                f"({comparison['preservation_rate']:6.2f}%)"
+            )
+            log(f"     ✗ Lost:  {comparison['lost']:4d}")
+            log(f"     + New:   {comparison['new']:4d}")
+
     finally:
         if os.path.exists(temp_base):
             shutil.rmtree(temp_base)
@@ -347,12 +494,23 @@ def test_obfuscation_with_obfuscapk(apk_path):
     for technique, result in results.items():
         if technique == "original" or result is None:
             continue
+
+        if technique == "multi_obfuscation":
+            tech_display = "+".join(result["techniques"])
+        else:
+            tech_display = technique
+
         obf_count = orig_count + result["new"] - result["lost"]
+
         log(
-            f"{technique:<20} {obf_count:>10} {result['kept']:>6} {result['lost']:>6} "
+            f"{tech_display:<20} "
+            f"{obf_count:>10} "
+            f"{result['kept']:>6} "
+            f"{result['lost']:>6} "
             f"{result['preservation_rate']:>11.2f}% "
             f"{'MALWARE' if result['pred'] == 1 else 'BENIGN':>12}"
         )
+
         preservation_rates.append(result["preservation_rate"])
 
     avg_rate = (
